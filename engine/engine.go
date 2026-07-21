@@ -132,13 +132,14 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		bySeries[sk] = append(bySeries[sk], p)
 	}
 	for sk, sp := range bySeries {
-		val, ok := detect.Aggregate(d.Function, sp)
+		val, ok := detect.Aggregate(d.Function, d.Field, sp)
 		if !ok {
 			continue
 		}
 		mk := d.ID() + "|" + sk
 		var prob, score, typical float64
 		var dir core.Direction
+		kind := "metric"
 		switch {
 		case d.Distribution:
 			dm := e.distrib[mk]
@@ -155,13 +156,17 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			}
 			prob, score, typical, dir = sm.Observe(val)
 		default:
-			prob, score, typical, dir = e.model(mk, d.EffectiveSide()).Observe(val)
+			mdl := e.model(mk, d.EffectiveSide())
+			prob, score, typical, dir = mdl.Observe(val)
+			if mdl.LastMulti() {
+				kind = "multi_bucket"
+			}
 		}
 		if score >= e.threshold {
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
 				Actual: val, Typical: typical, Probability: prob,
-				Score: score, Direction: dir, Kind: "metric",
+				Score: score, Direction: dir, Kind: kind,
 				Influencers: e.influencers(d, sp),
 			})
 		}
@@ -196,7 +201,7 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 
 	evs := make([]ev, 0, len(ents))
 	for _, ent := range ents {
-		val, ok := detect.Aggregate(d.Function, byEntity[ent])
+		val, ok := detect.Aggregate(d.Function, d.Field, byEntity[ent])
 		if !ok {
 			continue
 		}
@@ -472,6 +477,45 @@ func addRec(br *core.BucketResult, r core.Record) {
 	br.Records = append(br.Records, r)
 	if r.Score > br.Score {
 		br.Score = r.Score
+	}
+}
+
+// RenormalizeResults rescales record scores relative to the most anomalous
+// bucket in the set: severity = -log10(probability), the score becomes
+// severity / anchor · 100 where anchor = max(observed severity, absolute
+// full-scale). So a later, larger anomaly pulls earlier moderate ones down —
+// the scores reflect how unusual each bucket is relative to what's been seen
+// (Elastic ML calls this renormalization). No-op below full scale.
+func RenormalizeResults(results []core.BucketResult) {
+	const fullScale = 12.0 // severity that maps to 100 in absolute terms
+	sevOf := func(p float64) float64 {
+		if p <= 0 {
+			return 15
+		}
+		return -math.Log10(p)
+	}
+	anchor := fullScale
+	for i := range results {
+		for _, r := range results[i].Records {
+			if s := sevOf(r.Probability); s > anchor {
+				anchor = s
+			}
+		}
+	}
+	for i := range results {
+		br := &results[i]
+		br.Score = 0
+		for j := range br.Records {
+			r := &br.Records[j]
+			sc := sevOf(r.Probability) / anchor * 100
+			if sc > 100 {
+				sc = 100
+			}
+			r.Score = sc
+			if sc > br.Score {
+				br.Score = sc
+			}
+		}
 	}
 }
 

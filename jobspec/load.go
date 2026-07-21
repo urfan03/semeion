@@ -27,6 +27,10 @@ func LoadFile(path string) (Job, error) {
 	return parseJob(raw, path)
 }
 
+// Parse decodes and validates a job from JSON bytes (bucket_span as a duration
+// string). Used by the API to accept jobs over the wire.
+func Parse(raw []byte) (Job, error) { return parseJob(raw, "request") }
+
 func parseJob(raw []byte, src string) (Job, error) {
 	var f fileJob
 	if err := json.Unmarshal(raw, &f); err != nil {

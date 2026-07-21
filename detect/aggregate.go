@@ -8,9 +8,10 @@ import (
 
 // Aggregate reduces one bucket's points to a single value per the detector
 // function. For count the points are counted (an empty bucket is a legitimate
-// count of 0); every other function reduces the points' Value. The bool is
-// false when the function can't produce a value (e.g. a metric over 0 points).
-func Aggregate(fn jobspec.Function, pts []core.DataPoint) (float64, bool) {
+// count of 0); every other function reduces the metric — the named field from
+// each point's Values (falling back to Value when absent). The bool is false
+// when the function can't produce a value (e.g. a metric over 0 points).
+func Aggregate(fn jobspec.Function, field string, pts []core.DataPoint) (float64, bool) {
 	if fn == jobspec.FuncCount {
 		return float64(len(pts)), true
 	}
@@ -19,7 +20,7 @@ func Aggregate(fn jobspec.Function, pts []core.DataPoint) (float64, bool) {
 	}
 	vals := make([]float64, len(pts))
 	for i, p := range pts {
-		vals[i] = p.Value
+		vals[i] = valueOf(p, field)
 	}
 	switch fn {
 	case jobspec.FuncSum:
@@ -55,4 +56,15 @@ func Aggregate(fn jobspec.Function, pts []core.DataPoint) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// valueOf reads a point's metric: the named field from Values, or Value when the
+// field is unset/absent (keeps single-metric inputs working unchanged).
+func valueOf(p core.DataPoint, field string) float64 {
+	if field != "" && p.Values != nil {
+		if v, ok := p.Values[field]; ok {
+			return v
+		}
+	}
+	return p.Value
 }

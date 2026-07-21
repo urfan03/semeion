@@ -154,7 +154,7 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("job %q: at least one detector is required", j.Name)
 	}
 	for i, d := range j.Detectors {
-		if d.Function == "" {
+		if d.Function == "" && !d.IsMultivariate() {
 			return fmt.Errorf("job %q: detector %d: function is required", j.Name, i)
 		}
 		if d.NeedsField() && d.Field == "" {

@@ -65,17 +65,29 @@ func parseCSV(rd io.Reader, timeCol, valueCol string) ([]core.DataPoint, error) 
 		if err != nil {
 			return nil, fmt.Errorf("row %d: value %q: %w", row, rec[vi], err)
 		}
+		// Every non-time column that parses as a number becomes a named metric in
+		// Values (so multivariate / per-field detectors work); the rest become
+		// string dimensions.
 		var dims map[string]string
+		var vals map[string]float64
 		for name, i := range idx {
-			if i == ti || i == vi || i >= len(rec) {
+			if i == ti || i >= len(rec) {
 				continue
 			}
-			if dims == nil {
-				dims = make(map[string]string)
+			s := strings.TrimSpace(rec[i])
+			if f, ferr := strconv.ParseFloat(s, 64); ferr == nil {
+				if vals == nil {
+					vals = make(map[string]float64)
+				}
+				vals[name] = f
+			} else if i != vi {
+				if dims == nil {
+					dims = make(map[string]string)
+				}
+				dims[name] = s
 			}
-			dims[name] = strings.TrimSpace(rec[i])
 		}
-		out = append(out, core.DataPoint{Time: ts, Value: val, Fields: dims})
+		out = append(out, core.DataPoint{Time: ts, Value: val, Fields: dims, Values: vals})
 	}
 	return out, nil
 }

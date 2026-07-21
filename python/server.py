@@ -3,7 +3,10 @@
 Exposes the model_provider functions over JSON/HTTP so the Go engine's
 `model.HTTPProvider` can call them. Stdlib only (http.server) — no framework.
 
-    python server.py [port]        # default 8899
+    python server.py [port]        # default 8899, or $SEMEION_MODEL_PORT
+
+Binds 127.0.0.1 by default; set SEMEION_MODEL_HOST=0.0.0.0 to expose it (the
+container image does exactly that).
 
 Endpoints (POST, JSON in/out):
     /detect_seasonality  {"series":[...]}            -> {"periods":[...]}
@@ -14,6 +17,7 @@ Endpoints (POST, JSON in/out):
 """
 
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -32,6 +36,16 @@ ROUTES = {
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet
         pass
+
+    def do_GET(self):
+        if self.path != "/healthz":
+            self.send_error(404, "unknown method")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
 
     def do_POST(self):
         route = ROUTES.get(self.path)
@@ -54,9 +68,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"semeion model plane on http://127.0.0.1:{port}", flush=True)
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("SEMEION_MODEL_PORT", "8899"))
+    host = os.getenv("SEMEION_MODEL_HOST", "127.0.0.1")
+    srv = ThreadingHTTPServer((host, port), Handler)
+    print(f"semeion model plane on http://{host}:{port}", flush=True)
     srv.serve_forever()
 
 

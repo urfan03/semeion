@@ -56,6 +56,12 @@ go run ./cmd/semeion run --job examples/population.json --csv examples/populatio
 # seasonality-aware detection: add "seasonal": true to a detector so a value is
 # scored against its time-of-cycle baseline (catches a daytime trough / night spike)
 
+# zero-config: let semeion infer a job (bucket span + detectors) from your data
+go run ./cmd/semeion autopilot --csv examples/latency.csv
+
+# multivariate: a job detector with "fields": ["cpu","mem","io"] flags a broken
+# correlation between metrics even when each one alone is in range
+
 # forecast a series (auto-detects the period; seasonal-naive + trend)
 go run ./cmd/semeion forecast --csv examples/sine.csv --horizon 12
 
@@ -75,6 +81,31 @@ go run ./cmd/semeion run --job job.json \
 
 # --state makes a run resumable: baselines are loaded before and saved after
 go run ./cmd/semeion run --job job.json --csv data.csv --state ./state.json
+
+# server: REST API + the built-in Anomaly Explorer UI on http://localhost:8080
+go run ./cmd/semeion serve --demo
+```
+
+### Server
+
+`serve` exposes the engine over HTTP and serves the embedded **Anomaly
+Explorer** (no build step, no CDN — the UI is `go:embed`ed in the binary):
+
+| Endpoint | What |
+|----------|------|
+| `POST /v1/analyze` | `{"job": {...}, "points": [...]}` → bucket results; the run is kept under its job name |
+| `POST /v1/autopilot` | points in → an inferred job + its results |
+| `POST /v1/forecast` | `{"series": [...], "horizon": N}` → forecast (uses the model plane if configured) |
+| `GET /v1/jobs` | analysed job names |
+| `GET /v1/results/{job}` | stored bucket results |
+| `GET /v1/grafana/{job}` | flat `time`/`score`/`detector`/`kind` rows for a Grafana table/time-series panel |
+| `GET /healthz` | liveness |
+| `GET /` | Anomaly Explorer UI |
+
+```sh
+docker compose up            # engine + optional Python model plane
+helm install semeion deploy/helm/semeion \
+  --set modelPlane.enabled=true          # scipy/statsmodels sidecar, off by default
 ```
 
 A job is plain JSON (Elastic-ML-like); `bucket_span` is a Go duration:
@@ -97,8 +128,9 @@ Three layers, so the engine stays a clean library and Python is optional:
 
 - **`pkg/`** — pure library: detectors, online statistics, scoring. No I/O.
 - **`engine/`** — stateful: buckets points, keeps a model per time-series, emits results.
-- **`store/`**, **`ingest/`**, **`api/`**, **`cmd/`** — state, sources, transport, CLI.
-- **`model/`** — a `ModelProvider` gRPC contract for the *heavy* model math
+- **`datafeed/`**, **`api/`**, **`cmd/`** — sources (Prometheus, Elasticsearch,
+  Loki, ClickHouse, CSV), the REST transport + embedded UI, and the CLI.
+- **`model/`** — a `ModelProvider` JSON/HTTP contract for the *heavy* model math
   (auto-seasonality, Bayesian distribution fit, change-point, forecasting,
   outlier). Ships with a **native Go provider** (default, zero deps) and an
   **optional Python sidecar** (statsmodels / scipy / ruptures / pyod) for
@@ -114,8 +146,9 @@ Three layers, so the engine stays a clean library and Python is optional:
 | **A1 ✅** | Streaming metric AD: robust baseline, single/multi-metric, by/partition, scoring 0–100, bucket span, batch **+ streaming (Push/Flush)**, **snapshot persistence**, **Prometheus + Elasticsearch datafeeds**, CLI, single binary |
 | **A2 ✅** | Log **Drain categorization** (new / rare / spiking templates) · **population** (`over_field`) · generic **`rare`** value function · **influencers** (dimension attribution) · **feedback suppression** · categorizer **streaming + snapshot** · `logs`/`catdemo` CLI |
 | **A3 ✅** | Heavy models via a `model.Provider` seam (pure-Go default + **live Python plane over HTTP**): **auto-seasonality** + **seasonality-aware detection**, **decompose**, **forecast**, **change-points**, **Bayesian distribution** scoring (normal/lognormal/exponential/poisson), **info-content** (entropy), **time-of-day/week**, **population** + **rare** + **influencers**, **calendars** + **rules/filters**. `forecast`/`logs`/`catdemo` CLIs. |
-| **A4** | True multivariate (relationship-break), Shapley attribution, forecasting, multi-bucket, renormalization, model snapshots, zero-config autopilot |
-| **A5** | REST/gRPC API, Anomaly Explorer UI + Grafana datasource, more adapters, DFA outlier (pyod), Helm chart |
+| **A4 ✅** | **True multivariate** (relationship-break, Mahalanobis + χ²) + **contribution attribution**, **multi-bucket** (sustained-shift detection, median-robust), **renormalization** (rescale relative to the biggest anomaly), **zero-config autopilot** (infer a job from data), per-field metrics from `Values`. |
+| **A5 ✅** | **Ecosystem**: REST API (`serve`) + embedded **Anomaly Explorer** UI + **Grafana** endpoint, **Loki** + **ClickHouse** datafeeds, distroless **Dockerfile** + `docker compose`, **Helm chart** with an optional Python model-plane sidecar |
+| **A6** | Kafka/OTLP ingestion, gRPC API, DFA outlier (pyod), alerting sinks (Slack / webhook / Alertmanager) |
 
 ### Intelligence platform (consumes the engine)
 

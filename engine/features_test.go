@@ -89,6 +89,77 @@ func TestRareValue(t *testing.T) {
 	}
 }
 
+// Multi-bucket: a sustained mild shift (each bucket only ~2σ, below threshold)
+// is caught by the multi-bucket signal, tagged "multi_bucket".
+func TestMultiBucketSustainedShift(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var pts []core.DataPoint
+	for i := 0; i < 60; i++ {
+		v := 100 + 5*math.Sin(float64(i))
+		if i >= 35 && i < 52 { // a sustained ~+12 shift for 17 buckets
+			v += 12
+		}
+		pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute), Value: v})
+	}
+	job := jobspec.Job{Name: "mb", BucketSpan: time.Minute,
+		Detectors: []jobspec.Detector{{Function: jobspec.FuncMean, Field: "v"}}}
+	eng, _ := New(job)
+	results := eng.Run(pts, 50)
+
+	multi := false
+	for _, br := range results {
+		for _, r := range br.Records {
+			if r.Kind == "multi_bucket" {
+				multi = true
+			}
+		}
+	}
+	if !multi {
+		t.Fatal("expected a multi_bucket anomaly on the sustained shift")
+	}
+}
+
+// Renormalization pulls a moderate anomaly's score down relative to a much
+// larger one seen in the same run.
+func TestRenormalization(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var pts []core.DataPoint
+	for i := 0; i < 60; i++ {
+		v := 100.0
+		if i == 40 {
+			v = 160 // moderate spike (scores ~75 on its own)
+		}
+		if i == 50 {
+			v = 100000 // enormous spike
+		}
+		pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute), Value: v})
+	}
+	job := jobspec.Job{Name: "rn", BucketSpan: time.Minute,
+		Detectors: []jobspec.Detector{{Function: jobspec.FuncMean, Field: "v"}}}
+	eng, _ := New(job)
+	results := eng.Run(pts, 50)
+
+	RenormalizeResults(results)
+
+	var moderate, huge float64
+	for _, br := range results {
+		for _, r := range br.Records {
+			if r.Time.Equal(start.Add(40 * time.Minute)) {
+				moderate = r.Score
+			}
+			if r.Time.Equal(start.Add(50 * time.Minute)) {
+				huge = r.Score
+			}
+		}
+	}
+	if huge < 99 {
+		t.Fatalf("largest anomaly should renormalize to ~100, got %.1f", huge)
+	}
+	if moderate == 0 || moderate >= huge {
+		t.Fatalf("moderate anomaly should be pulled below the huge one: moderate=%.1f huge=%.1f", moderate, huge)
+	}
+}
+
 // Multivariate: three metrics normally move together. A correlated joint move
 // is NOT flagged, but a broken correlation (one up while another goes down) IS —
 // even though each metric stays within its own range.

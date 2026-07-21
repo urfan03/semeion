@@ -1,0 +1,14 @@
+services:
+  semeion:
+    build: .
+    command: ["serve", "--addr=:8080", "--model-url=http://model:8899", "--demo"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      - model
+
+  # Optional — remove this service (and --model-url) to run pure Go.
+  model:
+    build: ./python
+    expose:
+      - "8899"
