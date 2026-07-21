@@ -1,0 +1,26 @@
+# Binaries
+/bin/
+*.exe
+*.out
+semeion
+
+# Test / coverage
+*.test
+coverage.*
+*.prof
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local data
+*.db
+*.bolt
+/tmp/
+*.bin
+
+# Python plane
+__pycache__/
+*.pyc
+.venv/

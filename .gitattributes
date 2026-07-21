@@ -1,0 +1,8 @@
+# Normalize line endings: LF in the repo everywhere (CI runs on Linux).
+* text=auto eol=lf
+
+*.go   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.json text eol=lf
+*.csv  text eol=lf

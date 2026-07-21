@@ -1,0 +1,7 @@
+{
+  "name": "latency-mean",
+  "bucket_span": "5m",
+  "detectors": [
+    { "function": "mean", "field": "latency", "side": "high" }
+  ]
+}

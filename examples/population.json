@@ -1,0 +1,7 @@
+{
+  "name": "host-population",
+  "bucket_span": "1m",
+  "detectors": [
+    { "function": "mean", "field": "cpu", "over_field": "host" }
+  ]
+}
