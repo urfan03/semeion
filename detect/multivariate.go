@@ -37,7 +37,7 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	inv, ok := invert(cov)
 	if !ok {
 		m.push(vec)
-		return 1, 0, nil
+		return 1, 0, 0, nil
 	}
 	d := make([]float64, m.k)
 	for i := range d {
@@ -53,6 +53,7 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	}
 	prob = chiSquareTail(m2, m.k)
 	score = scoreFromProbability(prob)
+	dist = math.Sqrt(m2)
 
 	contrib = make([]float64, m.k)
 	if m2 > 0 {
@@ -61,7 +62,7 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 		}
 	}
 	m.push(vec)
-	return prob, score, contrib
+	return prob, score, dist, contrib
 }
 
 func (m *MultivariateModel) push(vec []float64) {

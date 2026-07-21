@@ -89,6 +89,55 @@ func TestRareValue(t *testing.T) {
 	}
 }
 
+// Multivariate: three metrics normally move together. A correlated joint move
+// is NOT flagged, but a broken correlation (one up while another goes down) IS —
+// even though each metric stays within its own range.
+func TestMultivariateRelationshipBreak(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	common := func(i int) float64 { return 100 + 15*math.Sin(float64(i)*0.3) }
+	mk := func(i int, a, b, c float64) core.DataPoint {
+		return core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute),
+			Values: map[string]float64{"cpu": a, "mem": b, "io": c}}
+	}
+	var pts []core.DataPoint
+	for i := 0; i < 60; i++ {
+		v := common(i)
+		pts = append(pts, mk(i, v+2*math.Sin(float64(i)*1.1), v+2*math.Sin(float64(i)*1.7), v+2*math.Sin(float64(i)*2.3)))
+	}
+	// bucket 60: a big CORRELATED move (all together) — should NOT fire.
+	pts = append(pts, mk(60, common(60)+15, common(60)+15, common(60)+15))
+	// bucket 61: a RELATIONSHIP BREAK (cpu up, mem down) — should fire.
+	pts = append(pts, mk(61, common(61)+25, common(61)-25, common(61)))
+
+	job := jobspec.Job{Name: "mv", BucketSpan: time.Minute,
+		Detectors: []jobspec.Detector{{Fields: []string{"cpu", "mem", "io"}}}}
+	eng, _ := New(job)
+	results := eng.Run(pts, 50)
+
+	fired := map[string]bool{}
+	var breakRec *core.Record
+	for i := range results {
+		for j := range results[i].Records {
+			r := &results[i].Records[j]
+			if r.Kind == "multivariate" {
+				fired[r.Time.Format("15:04")] = true
+				if r.Time.Equal(start.Add(61 * time.Minute)) {
+					breakRec = r
+				}
+			}
+		}
+	}
+	if fired[start.Add(60*time.Minute).Format("15:04")] {
+		t.Fatal("correlated joint move should NOT be flagged")
+	}
+	if breakRec == nil {
+		t.Fatal("relationship break should be flagged")
+	}
+	if len(breakRec.Influencers) == 0 {
+		t.Fatal("break should attribute contributions to metrics")
+	}
+}
+
 // info_content: entropy of a by_field's value distribution spikes when the set
 // of distinct values fans out.
 func TestInfoContentEntropySpike(t *testing.T) {

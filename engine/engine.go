@@ -45,6 +45,7 @@ type Engine struct {
 	models     map[string]*detect.Model             // temporal per-series + population pooled
 	seasonal   map[string]*detect.SeasonalModel     // seasonality-aware per-series
 	distrib    map[string]*detect.DistributionModel // distribution-based per-series
+	multivar   map[string]*detect.MultivariateModel // multivariate per-series
 	slotModels map[string]*detect.Model             // per wall-clock slot (time_of_day/week)
 	rare       map[string]*rareTracker              // per rare-detector value frequencies
 	provider   model.Provider                       // heavy-model math (seasonality, …)
@@ -74,6 +75,7 @@ func NewWithProvider(job jobspec.Job, prov model.Provider) (*Engine, error) {
 		models:     make(map[string]*detect.Model),
 		seasonal:   make(map[string]*detect.SeasonalModel),
 		distrib:    make(map[string]*detect.DistributionModel),
+		multivar:   make(map[string]*detect.MultivariateModel),
 		slotModels: make(map[string]*detect.Model),
 		rare:       make(map[string]*rareTracker),
 		provider:   prov,
@@ -104,6 +106,8 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 	br := core.BucketResult{Time: bt}
 	for _, d := range e.job.Detectors {
 		switch {
+		case d.IsMultivariate():
+			e.scoreMultivariate(&br, d, bt, pts)
 		case d.Function == jobspec.FuncRare:
 			e.scoreRare(&br, d, bt, pts)
 		case d.Function == jobspec.FuncInfoContent:
@@ -212,6 +216,92 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 			})
 		}
 	}
+}
+
+// scoreMultivariate scores the joint metric vector [agg(f1), agg(f2), …] per
+// series against its learned covariance (relationship-break detection), and
+// attributes the anomaly across metrics.
+func (e *Engine) scoreMultivariate(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
+	bySeries := make(map[string][]core.DataPoint)
+	for _, p := range pts {
+		bySeries[seriesKey(d, p.Fields)] = append(bySeries[seriesKey(d, p.Fields)], p)
+	}
+	for sk, sp := range bySeries {
+		vec := make([]float64, len(d.Fields))
+		ok := true
+		for i, f := range d.Fields {
+			v, has := meanValues(sp, f)
+			if !has {
+				ok = false
+				break
+			}
+			vec[i] = v
+		}
+		if !ok {
+			continue
+		}
+		mk := d.ID() + "|" + sk
+		mm := e.multivar[mk]
+		if mm == nil {
+			mm = detect.NewMultivariateModel(len(d.Fields))
+			e.multivar[mk] = mm
+		}
+		prob, score, dist, contrib := mm.Observe(vec)
+		if score >= e.threshold {
+			e.emit(br, d, core.Record{
+				Time: bt, Detector: d.ID(), Series: sk,
+				Actual: dist, Typical: math.Sqrt(float64(len(d.Fields))),
+				Probability: prob, Score: score, Direction: core.DirUp, Kind: "multivariate",
+				Influencers: multivarInfluencers(d.Fields, contrib),
+			})
+		}
+	}
+}
+
+// meanValues is the mean of a named numeric metric across a bucket's points.
+func meanValues(pts []core.DataPoint, field string) (float64, bool) {
+	var s float64
+	n := 0
+	for _, p := range pts {
+		if p.Values != nil {
+			if v, ok := p.Values[field]; ok {
+				s += v
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return 0, false
+	}
+	return s / float64(n), true
+}
+
+// multivarInfluencers ranks metrics by their contribution share to the anomaly.
+func multivarInfluencers(fields []string, contrib []float64) []core.Influencer {
+	type fc struct {
+		f string
+		c float64
+	}
+	arr := make([]fc, 0, len(fields))
+	for i, f := range fields {
+		c := 0.0
+		if i < len(contrib) {
+			c = contrib[i]
+		}
+		arr = append(arr, fc{f, c})
+	}
+	sort.Slice(arr, func(i, j int) bool { return arr[i].c > arr[j].c })
+	var out []core.Influencer
+	for _, x := range arr {
+		if x.c < 0.1 {
+			continue
+		}
+		out = append(out, core.Influencer{Field: x.f, Value: fmt.Sprintf("%.0f%%", x.c*100)})
+	}
+	if len(out) == 0 && len(arr) > 0 {
+		out = append(out, core.Influencer{Field: arr[0].f, Value: fmt.Sprintf("%.0f%%", arr[0].c*100)})
+	}
+	return out
 }
 
 // scoreInfoContent scores the Shannon entropy (bits) of a by_field's value
