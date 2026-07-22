@@ -165,6 +165,72 @@ def fit_distribution(samples: List[float]) -> dict:
     return best
 
 
+def outliers(rows: List[List[float]], k: int = 0, features: List[str] | None = None) -> List[dict]:
+    """Batch outlier detection over a table (Elastic's DFA outlier detection).
+
+    Uses pyod's ensemble when it is installed; the Go side falls back to its own
+    four-method ensemble on any error, so pyod is genuinely optional.
+
+    Returns one dict per row, in input order:
+        {"index": i, "score": 0..1, "methods": {...}, "influence": {...}}
+    """
+    from pyod.models.knn import KNN
+    from pyod.models.lof import LOF
+    from pyod.models.ecod import ECOD
+
+    x = np.asarray(rows, dtype=float)
+    n, d = x.shape
+    if n < 3:
+        raise ValueError("outlier detection needs at least 3 rows")
+
+    # Robust standardization (median / MAD), matching the Go implementation.
+    med = np.median(x, axis=0)
+    mad = 1.4826 * np.median(np.abs(x - med), axis=0)
+    scale = np.where(mad > 0, mad, np.where(x.std(axis=0) > 0, x.std(axis=0), 1.0))
+    z = (x - med) / scale
+
+    if k <= 0:
+        k = min(5, n - 1)
+    models = {"knn": KNN(n_neighbors=k), "lof": LOF(n_neighbors=k), "ecod": ECOD()}
+
+    scores = {}
+    for name, m in models.items():
+        m.fit(z)
+        raw = np.asarray(m.decision_scores_, dtype=float)
+        # Same normalization as Go: robust z in log space through a logistic
+        # centred at 3 deviations, so the numbers mean the same thing.
+        lg = np.log(np.maximum(raw, 1e-12))
+        c = np.median(lg)
+        s = 1.4826 * np.median(np.abs(lg - c))
+        if s <= 0:
+            s = lg.std() or 1.0
+        scores[name] = 1 / (1 + np.exp(-((lg - c) / s - 3)))
+
+    ens = np.mean(np.vstack(list(scores.values())), axis=0)
+
+    # Feature influence: each column's share of the squared distance to the k
+    # nearest neighbours.
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(z)
+    _, idx = tree.query(z, k=k + 1)  # the first hit is the row itself
+    out = []
+    for i in range(n):
+        nb = [j for j in idx[i] if j != i][:k]
+        per = ((z[i] - z[nb]) ** 2).sum(axis=0)
+        total = per.sum()
+        inf = None
+        if features and total > 0:
+            inf = {name: float(per[f] / total) for f, name in enumerate(features)}
+        out.append({
+            "index": i,
+            "score": float(ens[i]),
+            "methods": {name: float(v[i]) for name, v in scores.items()},
+            "influence": inf,
+        })
+    return out
+
+
 if __name__ == "__main__":
     # Tiny self-check on a synthetic seasonal series.
     demo = [100 + 30 * np.sin(2 * np.pi * i / 12) for i in range(120)]

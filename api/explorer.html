@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>semeion — Anomaly Explorer</title>
+<title>semeion — Explorer</title>
 <style>
   :root{
     --bg:#0e1113; --panel:#151a1d; --line:#232a2e; --ink:#e6edf0; --mut:#8b9aa3;
-    --teal:#14b8a6; --amber:#f59e0b; --red:#ef4444; --green:#22c55e;
+    --teal:#14b8a6; --amber:#f59e0b; --red:#ef4444; --green:#22c55e; --blue:#38bdf8;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
@@ -19,7 +19,13 @@
   select,button{background:#1b2226;color:var(--ink);border:1px solid var(--line);
                 border-radius:8px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
   button:hover,select:hover{border-color:#33414a}
+  .tabs{display:flex;gap:4px;margin-left:auto}
+  .tab{background:transparent;border:1px solid transparent}
+  .tab.on{background:#1b2226;border-color:var(--line);color:var(--ink)}
+  .tab:not(.on){color:var(--mut)}
   main{padding:22px;max-width:1180px;margin:0 auto}
+  .panel[hidden]{display:none}
+  .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:16px 18px;margin-bottom:18px}
   .card h2{margin:0 0 12px;font-size:13px;font-weight:700;color:var(--mut);
@@ -40,87 +46,124 @@
   .empty{padding:34px;text-align:center;color:var(--mut)}
   .legend{display:flex;gap:16px;align-items:center;font-size:11.5px;color:var(--mut);margin-top:10px}
   .sw{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:-1px}
+  /* incidents */
+  .inc{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px;background:var(--panel)}
+  .inc-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .inc-hd .title{font-weight:700;font-size:14px}
+  .pill{font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
+  .pill.open{background:#3a2118;color:var(--amber)}
+  .pill.resolved{background:#14231a;color:var(--green)}
+  .pill.crit{background:#3a1720;color:var(--red)}
+  .meta{color:var(--mut);font-size:12px;margin:6px 0 12px}
+  .cause{display:flex;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+  .rank{font-size:11px;color:var(--mut);width:22px;text-align:right;font-variant-numeric:tabular-nums}
+  .bar{flex:0 0 90px;height:6px;border-radius:4px;background:#1e2a2e;overflow:hidden}
+  .bar>i{display:block;height:100%;background:var(--teal)}
+  .cwhat{font-weight:600;min-width:120px}
+  .creasons{color:var(--mut);font-size:12px}
+  .actions li{margin:4px 0}
+  .actions .why{color:var(--mut)}
+  .narr{font-size:13.5px;line-height:1.6;margin:2px 0 12px}
+  .chip{font-size:11px;background:#1b2226;border:1px solid var(--line);border-radius:20px;padding:1px 9px;color:var(--mut)}
 </style>
 </head>
 <body>
 <header>
-  <h1>semeion <small>Anomaly Explorer</small></h1>
+  <h1>semeion <small id="sub">Explorer</small></h1>
   <select id="job"></select>
   <button id="refresh">Refresh</button>
   <span id="status" style="color:var(--mut);font-size:12.5px"></span>
+  <div class="tabs">
+    <button class="tab on" data-view="anomalies">Anomalies</button>
+    <button class="tab" data-view="incidents">Incidents</button>
+    <button class="tab" data-view="topology">Topology</button>
+    <button class="tab" data-view="slo">SLO</button>
+  </div>
 </header>
 
 <main>
-  <div class="stats" id="stats"></div>
-
-  <div class="card">
-    <h2>Anomaly swimlane</h2>
-    <div id="lane"></div>
-    <div class="legend">
-      <span><i class="sw" style="background:#1e2a2e"></i>quiet</span>
-      <span><i class="sw" style="background:var(--green)"></i>50–70</span>
-      <span><i class="sw" style="background:var(--amber)"></i>70–90</span>
-      <span><i class="sw" style="background:var(--red)"></i>90–100</span>
+  <!-- Anomalies -->
+  <section class="panel" id="panel-anomalies">
+    <div class="stats" id="stats"></div>
+    <div class="card">
+      <h2>Anomaly swimlane</h2>
+      <div id="lane"></div>
+      <div class="legend">
+        <span><i class="sw" style="background:#1e2a2e"></i>quiet</span>
+        <span><i class="sw" style="background:var(--green)"></i>50–70</span>
+        <span><i class="sw" style="background:var(--amber)"></i>70–90</span>
+        <span><i class="sw" style="background:var(--red)"></i>90–100</span>
+      </div>
     </div>
-  </div>
+    <div class="card"><h2>Records</h2><div id="records"></div></div>
+  </section>
 
-  <div class="card">
-    <h2>Records</h2>
-    <div id="records"></div>
-  </div>
+  <!-- Incidents -->
+  <section class="panel" id="panel-incidents" hidden>
+    <div class="stats" id="inc-stats"></div>
+    <div id="incidents"></div>
+  </section>
+
+  <!-- Topology -->
+  <section class="panel" id="panel-topology" hidden>
+    <div class="card"><h2>Service dependency graph</h2><div id="topo"></div></div>
+  </section>
+
+  <!-- SLO -->
+  <section class="panel" id="panel-slo" hidden>
+    <div class="card"><h2>Error budgets</h2><div id="slo"></div></div>
+  </section>
 </main>
 
 <script>
 const $ = s => document.querySelector(s);
+const esc = s => (s == null ? '' : String(s)).replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
 const fmt = n => Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2);
 const color = s => s >= 90 ? 'var(--red)' : s >= 70 ? 'var(--amber)' : s >= 50 ? 'var(--green)' : '#1e2a2e';
+const ago = t => { const d = (Date.now() - new Date(t)) / 1000;
+  if (d < 90) return Math.round(d) + 's ago'; if (d < 5400) return Math.round(d/60) + 'm ago';
+  return Math.round(d/3600) + 'h ago'; };
 
+let view = 'anomalies';
+
+// ── Anomalies ────────────────────────────────────────────────────────────────
 async function loadJobs() {
   const r = await fetch('/v1/jobs');
   const { jobs } = await r.json();
-  const sel = $('#job');
-  sel.innerHTML = '';
-  (jobs || []).sort().forEach(j => {
-    const o = document.createElement('option');
-    o.value = o.textContent = j;
-    sel.appendChild(o);
-  });
+  const sel = $('#job'); sel.innerHTML = '';
+  (jobs || []).sort().forEach(j => { const o = document.createElement('option');
+    o.value = o.textContent = j; sel.appendChild(o); });
   if (!jobs || !jobs.length) $('#status').textContent = 'no jobs yet — POST to /v1/analyze';
   return jobs || [];
 }
 
-async function load() {
+async function loadAnomalies() {
   const job = $('#job').value;
-  if (!job) { render(null); return; }
+  if (!job) { renderAnomalies(null); return; }
   const r = await fetch('/v1/results/' + encodeURIComponent(job));
-  if (!r.ok) { $('#status').textContent = 'no results'; render(null); return; }
+  if (!r.ok) { $('#status').textContent = 'no results'; renderAnomalies(null); return; }
   const { results } = await r.json();
   $('#status').textContent = '';
-  render(results || []);
+  renderAnomalies(results || []);
 }
 
-function render(results) {
+function renderAnomalies(results) {
   if (!results) { $('#stats').innerHTML = ''; $('#lane').innerHTML = '<div class="empty">No data.</div>';
                   $('#records').innerHTML = ''; return; }
-
   const recs = results.flatMap(b => b.records || []);
   const top = recs.reduce((m, r) => Math.max(m, r.score), 0);
-  const stats = [
-    ['Buckets', results.length], ['Anomalies', recs.length],
+  const stats = [['Buckets', results.length], ['Anomalies', recs.length],
     ['Top score', top ? top.toFixed(0) : '—'],
-    ['Detectors', new Set(recs.map(r => r.detector)).size || '—'],
-  ];
+    ['Detectors', new Set(recs.map(r => r.detector)).size || '—']];
   $('#stats').innerHTML = stats.map(([k, v]) =>
     `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
 
-  // swimlane: one cell per bucket, coloured by score
   const w = 1100, h = 46, n = results.length || 1, cw = Math.max(1, w / n);
   $('#lane').innerHTML = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;display:block">` +
     results.map((b, i) =>
       `<rect x="${(i * cw).toFixed(2)}" y="0" width="${Math.max(cw - .5, .8).toFixed(2)}" height="${h}"
              fill="${color(b.score || 0)}" opacity="${b.score ? 1 : .5}">
-         <title>${new Date(b.time).toLocaleString()} — score ${(b.score || 0).toFixed(0)}</title>
-       </rect>`).join('') + '</svg>';
+         <title>${new Date(b.time).toLocaleString()} — score ${(b.score || 0).toFixed(0)}</title></rect>`).join('') + '</svg>';
 
   if (!recs.length) { $('#records').innerHTML = '<div class="empty">No anomalies above threshold.</div>'; return; }
   recs.sort((a, b) => b.score - a.score);
@@ -130,20 +173,144 @@ function render(results) {
       <th style="text-align:right">Score</th><th>Influencers</th></tr></thead><tbody>` +
     recs.slice(0, 200).map(r => `<tr>
       <td class="mono">${new Date(r.time).toLocaleString()}</td>
-      <td class="mono">${r.detector || ''}</td>
-      <td class="mono">${r.series || ''}</td>
-      <td><span class="kind">${r.kind || 'metric'}</span></td>
+      <td class="mono">${esc(r.detector)}</td><td class="mono">${esc(r.series)}</td>
+      <td><span class="kind">${esc(r.kind || 'metric')}</span></td>
       <td class="mono" style="text-align:right">${fmt(r.actual || 0)}</td>
       <td class="mono" style="text-align:right">${fmt(r.typical || 0)}</td>
       <td class="mono" style="text-align:right;font-weight:700;color:${color(r.score)}">${r.score.toFixed(0)}</td>
-      <td class="infl">${(r.influencers || []).map(i => `${i.field}=${i.value}`).join(', ')}
-          ${r.template ? '<span class="mono">' + r.template.replace(/</g, '&lt;') + '</span>' : ''}</td>
+      <td class="infl">${(r.influencers || []).map(i => esc(i.field) + '=' + esc(i.value)).join(', ')}
+          ${r.template ? '<span class="mono">' + esc(r.template) + '</span>' : ''}</td>
     </tr>`).join('') + '</tbody></table>';
 }
 
-$('#refresh').onclick = load;
-$('#job').onchange = load;
-(async () => { await loadJobs(); await load(); })();
+// ── Incidents ────────────────────────────────────────────────────────────────
+async function loadIncidents() {
+  const r = await fetch('/v1/incidents?window=15m');
+  if (!r.ok) { $('#incidents').innerHTML = '<div class="empty">Incident correlation unavailable.</div>'; return; }
+  const { incidents, symptoms } = await r.json();
+  const list = incidents || [];
+  const crit = list.filter(i => (i.peak_score || i.max_score || 0) >= 75).length;
+  $('#inc-stats').innerHTML = [['Open incidents', list.length], ['Critical', crit || '—'],
+    ['Correlated symptoms', symptoms || 0]]
+    .map(([k, v]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+
+  if (!list.length) { $('#incidents').innerHTML = '<div class="empty">No open incidents. '
+      + 'Anomalies correlate into incidents as they arrive.</div>'; return; }
+
+  $('#incidents').innerHTML = list.map(renderIncident).join('');
+  list.forEach(i => { const b = document.querySelector(`[data-explain="${i.id}"]`);
+    if (b) b.onclick = () => explain(i.id); });
+}
+
+function renderIncident(i) {
+  const peak = i.peak_score || i.max_score || 0;
+  const statusPill = i.status === 'resolved' ? '<span class="pill resolved">resolved</span>'
+    : peak >= 75 ? '<span class="pill crit">critical</span>' : '<span class="pill open">open</span>';
+  const lead = (i.root_cause || [])[0];
+  const title = i.summary ? i.summary.split(' — ')[0] : (i.jobs || []).join(', ');
+  const causes = (i.root_cause || []).slice(0, 4).map((c, idx) => {
+    const what = c.change ? '⟳ ' + esc(c.change.name)
+      : esc((c.symptom && (c.symptom.entities && c.symptom.entities.service)) || (c.symptom && c.symptom.job) || '?');
+    const pct = Math.round((c.confidence || 0) * 100);
+    return `<div class="cause"><span class="rank">#${idx + 1}</span>
+        <span class="bar"><i style="width:${pct}%"></i></span>
+        <span class="cwhat">${what}</span>
+        <span class="creasons">${(c.reasons || []).map(esc).join('; ')}</span></div>`;
+  }).join('');
+  const svc = (i.services || []).map(s => `<span class="chip">${esc(s)}</span>`).join(' ');
+  return `<div class="inc">
+    <div class="inc-hd">${statusPill}<span class="title">${esc(title)}</span>
+      <span class="meta" style="margin:0">peak ${peak.toFixed(0)} · seen ${i.seen || 1}× · last ${ago(i.last_activity || i.end)}</span></div>
+    <div class="meta">${svc} ${(i.jobs || []).length} signal(s)${i.changes && i.changes.length ? ' · ' + i.changes.length + ' change(s)' : ''}</div>
+    ${causes}
+    <div style="margin-top:12px"><button data-explain="${esc(i.id)}">Explain &amp; recommend</button>
+      <span id="brief-${esc(i.id)}"></span></div>
+  </div>`;
+}
+
+async function explain(id) {
+  const slot = document.getElementById('brief-' + id);
+  if (!slot) return;
+  slot.innerHTML = ' <span style="color:var(--mut)">…</span>';
+  const r = await fetch('/v1/explain/' + encodeURIComponent(id));
+  if (!r.ok) { slot.innerHTML = ' <span style="color:var(--red)">unavailable</span>'; return; }
+  const { brief } = await r.json();
+  const actions = (brief.actions || []).map(a =>
+    `<li><b>${esc(a.title)}</b> <span class="why">— ${esc(a.rationale)}</span></li>`).join('');
+  slot.innerHTML = `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <div class="narr">${esc(brief.narrative)}</div>
+      ${actions ? '<b style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em">Recommended</b>'
+        + '<ul class="actions">' + actions + '</ul>' : ''}</div>`;
+}
+
+// ── Topology ─────────────────────────────────────────────────────────────────
+async function loadTopology() {
+  const r = await fetch('/v1/topology');
+  const box = $('#topo');
+  if (!r.ok) { box.innerHTML = '<div class="empty">unavailable</div>'; return; }
+  const { edges, nodes } = await r.json();
+  if (!edges || !edges.length) { box.innerHTML = '<div class="empty">No traces yet — '
+      + 'POST OTLP spans to /v1/otlp/v1/traces to build the graph.</div>'; return; }
+  box.innerHTML = `<table><thead><tr><th>Caller</th><th></th><th>Callee</th>
+      <th style="text-align:right">Calls</th><th style="text-align:right">Errors</th>
+      <th style="text-align:right">p50 ms</th></tr></thead><tbody>` +
+    edges.map(e => `<tr>
+      <td class="mono">${esc(e.caller)}</td><td style="color:var(--mut)">→</td><td class="mono">${esc(e.callee)}</td>
+      <td class="mono" style="text-align:right">${e.calls}</td>
+      <td class="mono" style="text-align:right;color:${e.errors ? 'var(--red)' : 'var(--mut)'}">${e.errors || 0}</td>
+      <td class="mono" style="text-align:right">${(e.p50_ms || 0).toFixed(0)}</td></tr>`).join('')
+    + '</tbody></table>' + `<div class="legend">${(nodes || []).length} service(s) observed</div>`;
+}
+
+// ── SLO ──────────────────────────────────────────────────────────────────────
+async function loadSLO() {
+  const r = await fetch('/v1/slo');
+  const box = $('#slo');
+  if (!r.ok) { box.innerHTML = '<div class="empty">unavailable</div>'; return; }
+  const { slos } = await r.json();
+  if (!slos || !slos.length) { box.innerHTML = '<div class="empty">No error budgets yet — '
+      + 'POST good/total samples to /v1/slo/{name}.</div>'; return; }
+  const sev = s => s === 'critical' ? 'var(--red)' : s === 'warning' ? 'var(--amber)' : 'var(--green)';
+  box.innerHTML = `<table><thead><tr><th>SLO</th><th>SLI</th>
+      <th style="text-align:right">Budget used</th><th style="text-align:right">Burn</th>
+      <th>Status</th></tr></thead><tbody>` +
+    slos.map(s => {
+      const used = Math.max(0, Math.min(1, s.budget_consumed || 0));
+      return `<tr>
+        <td class="mono">${esc(s.name)}</td>
+        <td class="mono">${((s.sli || 0) * 100).toFixed(3)}%</td>
+        <td style="text-align:right">
+          <span class="bar" style="flex-basis:80px;display:inline-block;vertical-align:middle">
+            <i style="width:${(used * 100).toFixed(0)}%;background:${sev(s.severity)}"></i></span>
+          <span class="mono" style="margin-left:6px">${((s.budget_consumed || 0) * 100).toFixed(0)}%</span></td>
+        <td class="mono" style="text-align:right">${(s.burn_rate || 0).toFixed(1)}×</td>
+        <td><span class="pill" style="background:#1b2226;color:${sev(s.severity)}">${esc(s.severity)}</span></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+// ── view switching ───────────────────────────────────────────────────────────
+function show(v) {
+  view = v;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === v));
+  ['anomalies', 'incidents', 'topology', 'slo'].forEach(p => $('#panel-' + p).hidden = p !== v);
+  $('#job').style.display = v === 'anomalies' ? '' : 'none';
+  $('#sub').textContent = { anomalies: 'Anomaly Explorer', incidents: 'Incidents',
+    topology: 'Topology', slo: 'Error budgets' }[v];
+  refresh();
+}
+
+function refresh() {
+  if (view === 'anomalies') return loadAnomalies();
+  if (view === 'incidents') return loadIncidents();
+  if (view === 'topology') return loadTopology();
+  if (view === 'slo') return loadSLO();
+}
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
+$('#refresh').onclick = refresh;
+$('#job').onchange = loadAnomalies;
+(async () => { await loadJobs(); await loadAnomalies(); })();
 </script>
 </body>
 </html>

@@ -14,6 +14,8 @@ Endpoints (POST, JSON in/out):
     /forecast            {"series":[...],"horizon":N}-> {"forecast":[...]}
     /change_points       {"series":[...]}            -> {"change_points":[...]}
     /fit_distribution    {"samples":[...]}           -> {"family","params","loglik"}
+    /outliers            {"rows":[[...]],"k":N,"features":[...]}
+                                                     -> {"results":[{index,score,…}]}
 """
 
 import json
@@ -30,6 +32,7 @@ ROUTES = {
     "/forecast": lambda b: {"forecast": mp.forecast(b["series"], int(b["horizon"]))},
     "/change_points": lambda b: {"change_points": mp.change_points(b["series"])},
     "/fit_distribution": lambda b: mp.fit_distribution(b["samples"]),
+    "/outliers": lambda b: {"results": mp.outliers(b["rows"], int(b.get("k", 0)), b.get("features"))},
 }
 
 

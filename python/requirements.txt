@@ -2,3 +2,5 @@ numpy>=1.26
 scipy>=1.11
 statsmodels>=0.14
 ruptures>=1.1
+# Only needed for /outliers; without it the Go ensemble is used instead.
+pyod>=2.0
