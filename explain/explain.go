@@ -108,12 +108,15 @@ func headline(inc correlate.Incident, c Cause) string {
 func actions(inc correlate.Incident, lead correlate.Candidate) []Action {
 	var out []Action
 
-	// A deliberate change is the most actionable finding: it can be reverted.
-	if lead.Change != nil {
+	// A deliberate change is the most actionable finding — but only recommend a
+	// rollback when the change actually PRECEDED the symptoms. A change during
+	// the incident is a likely remediation; telling the operator to roll back the
+	// fix would be actively harmful, so never fabricate "preceding".
+	if lead.Change != nil && changePrecedes(inc, lead.Change.Time) {
 		out = append(out, Action{
 			Priority:  1,
 			Title:     "Roll back " + lead.Change.Name,
-			Rationale: "it is the deliberate change most closely preceding the incident, and is the fastest thing to reverse",
+			Rationale: "it is a deliberate change that preceded the incident's onset, and is the fastest thing to reverse",
 		})
 	}
 
@@ -212,6 +215,18 @@ func evidence(inc correlate.Incident) []string {
 		ev = append(ev, "entities: "+strings.Join(keys, ", "))
 	}
 	return ev
+}
+
+// changePrecedes reports whether t is at or before the earliest symptom in the
+// incident — i.e. the change could actually have caused it.
+func changePrecedes(inc correlate.Incident, t time.Time) bool {
+	first := inc.End
+	for _, s := range inc.Symptoms {
+		if s.Time.Before(first) {
+			first = s.Time
+		}
+	}
+	return !t.After(first)
 }
 
 func upstreamReason(reasons []string) string {

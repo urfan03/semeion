@@ -7,6 +7,9 @@ import "time"
 type Influencer struct {
 	Field string `json:"field"`
 	Value string `json:"value"`
+	// Score (0..1) is how much of the bucket's anomalous mass this value carries
+	// — the share of points/metric attributable to it. 0 when not computed.
+	Score float64 `json:"score,omitempty"`
 }
 
 // Direction is the sign of a deviation.

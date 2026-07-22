@@ -77,6 +77,16 @@ func (h *HTTPProvider) Forecast(series []float64, horizon int) []float64 {
 	return out.Forecast
 }
 
+func (h *HTTPProvider) ForecastBands(series []float64, horizon int) []Band {
+	var out struct {
+		Bands []Band `json:"bands"`
+	}
+	if err := h.call("/forecast_bands", map[string]any{"series": series, "horizon": horizon}, &out); err != nil || len(out.Bands) != horizon {
+		return h.fallback.ForecastBands(series, horizon)
+	}
+	return out.Bands
+}
+
 func (h *HTTPProvider) ChangePoints(series []float64) []int {
 	var out struct {
 		ChangePoints []int `json:"change_points"`

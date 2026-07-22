@@ -72,21 +72,15 @@ func (m *Model) evaluate(value float64) (prob, score, typical, z float64, dir co
 	typical = med
 	z = stats.ModifiedZScore(value, med, mad)
 	if mad == 0 {
-		// Flat baseline (half the window identical): fall back to mean/std, and
-		// when that is also zero (a *perfectly* constant baseline, common for
-		// integer counts), use a Poisson-style scale floor so a departure from
-		// the constant norm is still caught instead of scoring zero.
-		mean, std := stats.MeanStd(m.history)
-		typical = mean
-		if std > 0 {
-			z = (value - mean) / std
-		} else {
-			scale := math.Sqrt(math.Abs(mean))
-			if scale < 1 {
-				scale = 1
-			}
-			z = (value - mean) / scale
-		}
+		// Flat baseline: more than half the window equals the median, so the
+		// robust spread is zero. The full-window std would be WRONG here — it
+		// measures the very outliers we want to flag, not the normal variation
+		// (a few past spikes in-window would inflate std and hide a new, smaller
+		// anomaly). Keep the robust centre (median) and use a data-relative scale
+		// floor instead: a Poisson √mean floor for count data, a small fraction of
+		// the level for continuous data (scale-invariant, so the same relative
+		// jump scores the same at any level).
+		z = (value - med) / robustScaleFloor(m.history, med)
 	}
 
 	dir = core.DirUp
@@ -106,9 +100,58 @@ func (m *Model) evaluate(value float64) (prob, score, typical, z float64, dir co
 		}
 	}
 
+	// Two-sided for a both-sided detector (a spike OR a dip is anomalous), one-
+	// sided for high/low. This matches the DistributionModel's convention so a
+	// given extremeness scores the same whichever detector produced it.
 	prob = stats.UpperTail(math.Abs(z))
+	if m.side == jobspec.SideBoth {
+		prob = math.Min(1, 2*prob)
+	}
 	score = scoreFromProbability(prob)
 	return prob, score, typical, z, dir
+}
+
+// constantRelFloor is the minimum detectable deviation on a constant continuous
+// baseline, as a fraction of the level (2%): the scale of "normal" variation is
+// zero, so we treat a 2%-of-level move as the unit deviation.
+const constantRelFloor = 0.02
+
+// robustScaleFloor returns a scale for a (near-)constant baseline where the
+// robust spread (MAD) is zero. It deliberately does NOT use the window's
+// standard deviation, which would be inflated by the outliers we are trying to
+// detect. For count data it uses a Poisson √mean floor; for continuous data a
+// small fraction of the level, so the same relative jump scores the same at any
+// magnitude.
+func robustScaleFloor(history []float64, center float64) float64 {
+	if isIntegerSeries(history) {
+		s := math.Sqrt(math.Abs(center))
+		if s < 1 {
+			s = 1
+		}
+		return s
+	}
+	if s := math.Abs(center) * constantRelFloor; s > 1e-9 {
+		return s
+	}
+	return 1e-9 // a constant-zero continuous baseline: any move is significant
+}
+
+// isIntegerSeries reports whether every sampled value is a whole number (count
+// data). It samples up to 64 values to stay cheap on a large window.
+func isIntegerSeries(history []float64) bool {
+	if len(history) == 0 {
+		return false
+	}
+	step := 1
+	if len(history) > 64 {
+		step = len(history) / 64
+	}
+	for i := 0; i < len(history); i += step {
+		if history[i] != math.Trunc(history[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Learn folds value into the baseline.
@@ -128,11 +171,17 @@ func (m *Model) Observe(value float64) (prob, score, typical float64, dir core.D
 			m.recent = m.recent[len(m.recent)-m.mbWindow:]
 		}
 		if len(m.recent) == m.mbWindow {
-			// MEDIAN residual amplified by √M: a genuine SUSTAINED shift (most of
-			// the window elevated) flags; a single spike doesn't move the median,
-			// so one outlier can't masquerade as M sustained anomalies.
-			mbZ := stats.Median(m.recent) * math.Sqrt(float64(m.mbWindow))
+			// MEDIAN residual, standardized to unit variance: a genuine SUSTAINED
+			// shift (most of the window elevated) flags; a single spike doesn't move
+			// the median, so one outlier can't masquerade as M sustained anomalies.
+			// The sample median of M unit-normal residuals has std √(π/2M), so the
+			// standardizing factor is √(2M/π) — NOT √M (which leaves the statistic
+			// over-dispersed by √(π/2)≈1.25 and inflates the false-positive rate).
+			mbZ := stats.Median(m.recent) * math.Sqrt(2*float64(m.mbWindow)/math.Pi)
 			mbProb := stats.UpperTail(math.Abs(mbZ))
+			if m.side == jobspec.SideBoth {
+				mbProb = math.Min(1, 2*mbProb)
+			}
 			if mbScore := scoreFromProbability(mbProb); mbScore > score {
 				prob, score, m.lastMulti = mbProb, mbScore, true
 			}

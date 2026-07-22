@@ -19,11 +19,17 @@ func TestFitNormalAndTail(t *testing.T) {
 	}
 }
 
-// Exponential is right-skewed: x=0 (its mode) is NOT anomalous; only large x is.
-func TestExponentialTailUpperOnly(t *testing.T) {
-	d := Distribution{Family: "exponential", Params: []float64{1}}
-	if p := d.Tail(0); p < 0.99 {
-		t.Fatalf("x=0 must not be extreme for exponential, got %.3f", p)
+// Exponential is used as a fit to positive metric data whose normal range sits
+// around the mean (1/rate). C3 regression: a collapse toward zero (an outage) is
+// anomalous — the two-sided tail must flag it, consistent with lognormal/normal.
+// A one-sided (high) detector suppresses the low direction upstream, not here.
+func TestExponentialTailTwoSided(t *testing.T) {
+	d := Distribution{Family: "exponential", Params: []float64{1}} // mean 1
+	if p := d.Tail(0); p > 0.05 {
+		t.Fatalf("x=0 (an outage) must be extreme for a metric, got %.3f", p)
+	}
+	if p := d.Tail(1); p < 0.5 {
+		t.Fatalf("x at the mean should not be extreme, got %.3f", p)
 	}
 	if p := d.Tail(10); p > 0.01 {
 		t.Fatalf("large x must be extreme, got %.4f", p)

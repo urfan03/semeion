@@ -45,7 +45,8 @@ type Report struct {
 	BurnRate        float64      `json:"burn_rate"`        // over the shortest window
 	Windows         []BurnWindow `json:"windows"`
 	Exhaustion      *time.Time   `json:"exhaustion,omitempty"` // projected budget-exhaustion time
-	Severity        string       `json:"severity"`             // ok | warning | critical
+	Severity        string       `json:"severity"`             // ok | warning | critical | no_data
+	NoData          bool         `json:"no_data,omitempty"`    // no events in the window (SLI unknown)
 	Now             time.Time    `json:"now"`
 }
 
@@ -88,40 +89,52 @@ func Evaluate(t Target, samples []Sample, now time.Time) Report {
 		Now:             now,
 	}
 
-	// Burn-rate windows. Each rate is the window's error rate divided by the
-	// budget: 1.0 means "burning exactly fast enough to spend the whole budget
-	// over the SLO window", >1 means faster. A window that caught no samples
-	// carries no signal and is dropped — an empty window is "no data", not
-	// "zero burn", and treating it as the latter would silence real alerts.
-	for _, w := range burnWindows(win) {
-		n := countWindow(sorted, now.Add(-w), now)
-		if n == 0 {
-			continue
-		}
-		g, tot := sumWindow(sorted, now.Add(-w), now)
-		bw := BurnWindow{Window: w, Samples: n}
-		if tot > 0 {
-			bw.ErrRate = 1 - g/tot
+	// No data at all over the window: the SLI is unknown, not perfect. A service
+	// that has stopped emitting (an outage that also killed its exporter) would
+	// otherwise read as a healthy 100% — the most dangerous false-negative.
+	if total == 0 {
+		r.NoData = true
+		r.Severity = "no_data"
+		return r
+	}
+
+	// Burn over each evaluated window, for display. A window with no samples is
+	// "no data", not "zero burn", so it is dropped rather than counted as calm.
+	for _, w := range displayWindows(win) {
+		if g, tot, n := windowStats(sorted, now.Add(-w), now); n > 0 {
+			bw := BurnWindow{Window: w, Samples: n, ErrRate: 1 - g/tot}
 			if budget > 0 {
 				bw.BurnRate = bw.ErrRate / budget
 			}
+			r.Windows = append(r.Windows, bw)
 		}
-		r.Windows = append(r.Windows, bw)
 	}
-	if len(r.Windows) > 0 {
-		r.BurnRate = r.Windows[0].BurnRate // shortest window with data
-	}
+	// Headline burn = the fast long-window rate (the primary paging signal).
+	r.BurnRate = burnOver(sorted, budget, now, win/720) // ≈1h for a 30d SLO
 
-	r.Severity = severity(r.Windows, win)
+	r.Severity = severity(sorted, budget, now, win)
 	r.Exhaustion = projectExhaustion(r, win, now)
 	return r
 }
 
-// burnWindows returns the trailing windows to evaluate, shortest first, scaled
-// to the SLO window so the model works for a 1h or a 30d objective alike.
-func burnWindows(slo time.Duration) []time.Duration {
-	// Fractions of the SLO window: ~0.07% (≈30m of 30d), ~0.8% (≈6h), ~14% (≈4d).
-	fracs := []float64{1.0 / 1440, 1.0 / 120, 1.0 / 7}
+// burnOver returns the error-budget burn rate over the trailing window w (error
+// rate ÷ budget). A window with no samples returns 0 burn but is only used where
+// the caller has already established that data exists.
+func burnOver(sorted []Sample, budget float64, now time.Time, w time.Duration) float64 {
+	if w < time.Minute {
+		w = time.Minute
+	}
+	g, tot, n := windowStats(sorted, now.Add(-w), now)
+	if n == 0 || tot == 0 || budget <= 0 {
+		return 0
+	}
+	return (1 - g/tot) / budget
+}
+
+// displayWindows are representative trailing windows shown in the report,
+// scaled to the SLO window (≈1h / 6h / 3d for a 30d objective).
+func displayWindows(slo time.Duration) []time.Duration {
+	fracs := []float64{1.0 / 720, 1.0 / 120, 1.0 / 10}
 	out := make([]time.Duration, 0, len(fracs))
 	for _, f := range fracs {
 		w := time.Duration(float64(slo) * f)
@@ -133,30 +146,40 @@ func burnWindows(slo time.Duration) []time.Duration {
 	return out
 }
 
-// severity applies the two-window burn-rate policy from the SRE workbook, over
-// the windows that actually had data (shortest first): a fast burn sustained
-// across the two shortest windows is critical; a slower sustained burn, or a
-// sharp burn on the shortest window alone, is a warning.
-func severity(windows []BurnWindow, slo time.Duration) string {
-	if len(windows) == 0 {
-		return "ok"
+// severity applies Google SRE's multi-window, multi-burn-rate policy. Each alert
+// is a LONG window (the burn is big enough) confirmed by a SHORT window (the
+// burn is still happening right now, not a past blip that has since stopped):
+//
+//	critical: 14.4× over ≈1h, confirmed over ≈5m  (budget gone in ~2 days)
+//	warning:   6×  over ≈6h, confirmed over ≈30m  (budget gone in ~5 days)
+//
+// Pairing a long window with a short confirmation is what lets it page FAST
+// (on the short window) without pinning on a single noisy bucket.
+func severity(sorted []Sample, budget float64, now time.Time, slo time.Duration) string {
+	fastLong := burnOver(sorted, budget, now, slo/720)   // ≈1h
+	fastShort := burnOver(sorted, budget, now, slo/8640) // ≈5m
+	slowLong := burnOver(sorted, budget, now, slo/120)   // ≈6h
+	slowShort := burnOver(sorted, budget, now, slo/1440) // ≈30m
+
+	if fastLong >= 14.4 && fastShort >= 14.4 {
+		return "critical"
 	}
-	// Fast/critical: budget would be gone in ~2 days at 30d. Require corroboration
-	// from a second window when one exists, so a single noisy bucket can't page.
-	if windows[0].BurnRate >= 14.4 {
-		if len(windows) == 1 || windows[1].BurnRate >= 14.4 {
-			return "critical"
-		}
-	}
-	// Slow/warning: a sustained ≥6× burn on the longer windows.
-	if windows[len(windows)-1].BurnRate >= 6 {
-		return "warning"
-	}
-	// A sharp burn on the shortest window alone is still worth a warning.
-	if windows[0].BurnRate >= 3 {
+	if slowLong >= 6 && slowShort >= 6 {
 		return "warning"
 	}
 	return "ok"
+}
+
+// windowStats sums good/total and counts samples in [from,to].
+func windowStats(s []Sample, from, to time.Time) (good, total float64, n int) {
+	for _, x := range s {
+		if !x.Time.Before(from) && !x.Time.After(to) {
+			good += x.Good
+			total += x.Total
+			n++
+		}
+	}
+	return good, total, n
 }
 
 // projectExhaustion estimates when the budget hits zero at the current burn.
@@ -184,14 +207,4 @@ func sumWindow(s []Sample, from, to time.Time) (good, total float64) {
 		}
 	}
 	return good, total
-}
-
-func countWindow(s []Sample, from, to time.Time) int {
-	n := 0
-	for _, x := range s {
-		if !x.Time.Before(from) && !x.Time.After(to) {
-			n++
-		}
-	}
-	return n
 }

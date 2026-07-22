@@ -50,7 +50,14 @@ func (s *FileStore) Save(name string, snap engine.Snapshot) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(name), b, 0o644)
+	// Write to a temp file then rename, so a crash/SIGKILL mid-write can't leave
+	// a truncated JSON that fails to load and blocks the next start.
+	path := s.path(name)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (s *FileStore) Load(name string) (engine.Snapshot, bool, error) {

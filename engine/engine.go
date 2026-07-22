@@ -38,6 +38,27 @@ type rareTracker struct {
 	seen    map[string]int
 }
 
+// maxRareValues bounds a rare detector's per-value frequency map against a
+// high-cardinality by_field.
+const maxRareValues = 100000
+
+// evictCommon trims seen down to `keep` entries, dropping the highest-count
+// (most common) values first — they are the least likely to be flagged as rare.
+func (t *rareTracker) evictCommon(keep int) {
+	type kv struct {
+		v string
+		n int
+	}
+	all := make([]kv, 0, len(t.seen))
+	for v, n := range t.seen {
+		all = append(all, kv{v, n})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].n > all[j].n }) // most common first
+	for _, e := range all[:len(all)-keep] {
+		delete(t.seen, e.v)
+	}
+}
+
 // Engine holds a job, the live per-(detector,series) models + rare trackers,
 // and — for the streaming path — the buffer of not-yet-closed buckets.
 type Engine struct {
@@ -54,7 +75,26 @@ type Engine struct {
 	pending   map[time.Time][]core.DataPoint // streaming buffer (open buckets)
 	watermark time.Time
 	hasMark   bool
+
+	// Series-model memory bound (the Elastic ML model_memory_limit equivalent).
+	// A high-cardinality by/partition/over field would otherwise allocate one
+	// permanent model per distinct value and grow without limit. seriesLRU stamps
+	// each series' last use; when the count exceeds MaxSeries the least-recently-
+	// used are evicted from every model map.
+	seriesLRU map[string]int64
+	lruTick   int64
+	MaxSeries int // 0 → defaultMaxSeries
+	Evicted   int64
+
+	// LateDropped counts streaming points rejected because their bucket had
+	// already closed (out-of-order / delayed arrivals).
+	LateDropped int64
 }
+
+// defaultMaxSeries caps the number of distinct per-series models an engine keeps
+// resident. At ~10 KB/model this is ~500 MB worst case — a backstop, not a
+// tuning knob; set Engine.MaxSeries to change it.
+const defaultMaxSeries = 50000
 
 // New validates the job and returns a ready engine (with the default Go model
 // provider). Use NewWithProvider to inject a Python sidecar.
@@ -104,6 +144,14 @@ func seriesKey(d jobspec.Detector, fields map[string]string) string {
 // detector kind (temporal metric / population / rare). Shared by Run + streaming.
 func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResult {
 	br := core.BucketResult{Time: bt}
+	// A bucket inside a calendar window (a known event: release, sale,
+	// maintenance) is excluded from analysis ENTIRELY — not scored, and not fed
+	// into any baseline. Suppressing only the alert while still training would
+	// poison the model (the event's level becomes "normal"), so the whole bucket
+	// is skipped, matching Elastic ML's calendar/scheduled-event semantics.
+	if e.inCalendar(bt) {
+		return br
+	}
 	for _, d := range e.job.Detectors {
 		switch {
 		case d.IsMultivariate():
@@ -137,6 +185,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			continue
 		}
 		mk := d.ID() + "|" + sk
+		e.touchSeries(mk)
 		var prob, score, typical float64
 		var dir core.Direction
 		kind := "metric"
@@ -151,10 +200,10 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		case d.Seasonal:
 			sm := e.seasonal[mk]
 			if sm == nil {
-				sm = detect.NewSeasonalModel(d.EffectiveSide(), e.provider)
+				sm = detect.NewSeasonalModel(d.EffectiveSide(), e.provider, e.job.BucketSpan)
 				e.seasonal[mk] = sm
 			}
-			prob, score, typical, dir = sm.Observe(val)
+			prob, score, typical, dir = sm.Observe(bt, val)
 		default:
 			mdl := e.model(mk, d.EffectiveSide())
 			prob, score, typical, dir = mdl.Observe(val)
@@ -246,6 +295,7 @@ func (e *Engine) scoreMultivariate(br *core.BucketResult, d jobspec.Detector, bt
 			continue
 		}
 		mk := d.ID() + "|" + sk
+		e.touchSeries(mk)
 		mm := e.multivar[mk]
 		if mm == nil {
 			mm = detect.NewMultivariateModel(len(d.Fields))
@@ -322,7 +372,8 @@ func (e *Engine) scoreInfoContent(br *core.BucketResult, d jobspec.Detector, bt 
 		m := e.model(d.ID()+"|"+part, jobspec.SideBoth)
 		prob, score, typical, dir := m.Observe(val)
 		if score >= e.threshold {
-			infl := []core.Influencer{{Field: d.ByField, Value: dominant(pp, d.ByField)}}
+			bv, bscore := dominant(pp, d.ByField)
+			infl := []core.Influencer{{Field: d.ByField, Value: bv, Score: bscore}}
 			if d.PartitionField != "" {
 				infl = append(infl, core.Influencer{Field: d.PartitionField, Value: part})
 			}
@@ -352,6 +403,7 @@ func (e *Engine) scoreTimeOf(br *core.BucketResult, d jobspec.Detector, bt time.
 		// One slot baseline per (detector, series, slot); slots see 1 sample per
 		// day/week, so use a small warm-up.
 		key := fmt.Sprintf("%s|%s|slot%d", d.ID(), sk, slot)
+		e.touchSeries(key)
 		m := e.slotModels[key]
 		if m == nil {
 			m = detect.NewModelWarmup(jobspec.SideHigh, 512, 3)
@@ -411,6 +463,12 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 		vals = append(vals, v)
 	}
 	sort.Strings(vals)
+	// Bound the per-value frequency map: a high-cardinality by_field would
+	// otherwise grow it without limit. Drop the most-common values (the least
+	// "rare", least likely to be flagged) when over the cap.
+	if len(tr.seen) > maxRareValues {
+		tr.evictCommon(maxRareValues * 9 / 10)
+	}
 	for _, v := range vals {
 		tr.seen[v]++
 		if tr.buckets < rareWarmup {
@@ -428,12 +486,63 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 
 // model fetches (or lazily creates) a model by key.
 func (e *Engine) model(key string, side jobspec.Side) *detect.Model {
+	e.touchSeries(key)
 	m := e.models[key]
 	if m == nil {
 		m = detect.NewModel(side)
 		e.models[key] = m
 	}
 	return m
+}
+
+// touchSeries records a series key's use for LRU accounting and evicts the
+// least-recently-used models when the resident count exceeds MaxSeries.
+func (e *Engine) touchSeries(key string) {
+	if e.seriesLRU == nil {
+		e.seriesLRU = make(map[string]int64)
+	}
+	e.lruTick++
+	_, existed := e.seriesLRU[key]
+	e.seriesLRU[key] = e.lruTick
+	if !existed {
+		e.evictSeries()
+	}
+}
+
+// evictSeries drops the oldest ~10% of series when over the cap (batched so the
+// O(n log n) sort amortises across many inserts).
+func (e *Engine) evictSeries() {
+	max := e.MaxSeries
+	if max <= 0 {
+		max = defaultMaxSeries
+	}
+	if len(e.seriesLRU) <= max {
+		return
+	}
+	type kv struct {
+		k string
+		t int64
+	}
+	all := make([]kv, 0, len(e.seriesLRU))
+	for k, t := range e.seriesLRU {
+		all = append(all, kv{k, t})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].t < all[j].t })
+	keep := max * 9 / 10
+	for _, e2 := range all[:len(all)-keep] {
+		e.dropSeries(e2.k)
+	}
+}
+
+// dropSeries removes a series key from every model map (it lives in exactly one).
+func (e *Engine) dropSeries(key string) {
+	delete(e.seriesLRU, key)
+	delete(e.models, key)
+	delete(e.seasonal, key)
+	delete(e.distrib, key)
+	delete(e.multivar, key)
+	delete(e.slotModels, key)
+	e.Evicted++
 }
 
 // influencers builds the dimension attributions for a temporal record: the
@@ -450,18 +559,24 @@ func (e *Engine) influencers(d jobspec.Detector, sp []core.DataPoint) []core.Inf
 		infl = append(infl, core.Influencer{Field: d.ByField, Value: sp[0].Fields[d.ByField]})
 	}
 	for _, f := range e.job.Influencers {
-		if v := dominant(sp, f); v != "" {
-			infl = append(infl, core.Influencer{Field: f, Value: v})
+		if v, score := dominant(sp, f); v != "" {
+			infl = append(infl, core.Influencer{Field: f, Value: v, Score: score})
 		}
 	}
 	return infl
 }
 
-func dominant(pts []core.DataPoint, field string) string {
+// dominant returns the most-frequent value of field in the bucket and its
+// INFLUENCE SCORE: the share of the bucket's points that value carries (0..1) —
+// a deterministic proxy for Elastic ML's influencer score. A value present in
+// most of the anomalous points is a strong influencer; one in a handful is weak.
+func dominant(pts []core.DataPoint, field string) (string, float64) {
 	counts := make(map[string]int)
+	total := 0
 	for _, p := range pts {
 		if v := p.Fields[field]; v != "" {
 			counts[v]++
+			total++
 		}
 	}
 	best, bestN := "", 0
@@ -470,7 +585,10 @@ func dominant(pts []core.DataPoint, field string) string {
 			best, bestN = v, n
 		}
 	}
-	return best
+	if total == 0 {
+		return "", 0
+	}
+	return best, float64(bestN) / float64(total)
 }
 
 func addRec(br *core.BucketResult, r core.Record) {
@@ -490,7 +608,9 @@ func RenormalizeResults(results []core.BucketResult) {
 	const fullScale = 12.0 // severity that maps to 100 in absolute terms
 	sevOf := func(p float64) float64 {
 		if p <= 0 {
-			return 15
+			// A genuine underflow (truly extreme) anchors at full scale, never
+			// beyond it — so it can't unfairly deflate every other record.
+			return fullScale
 		}
 		return -math.Log10(p)
 	}
@@ -525,10 +645,38 @@ func (e *Engine) emit(br *core.BucketResult, d jobspec.Detector, r core.Record) 
 	if e.suppressed(d, r) {
 		return
 	}
+	// Backfill the probability from the assigned score for detectors that don't
+	// compute a tail probability (rare / info_content / time_of_day). Without
+	// this a probability-less record reads as p=0 (maximally extreme) and would
+	// dominate RenormalizeResults, pinning benign one-offs to score 100.
+	if r.Probability <= 0 && r.Score > 0 {
+		r.Probability = probFromScore(r.Score)
+	}
 	addRec(br, r)
 }
 
+// probFromScore inverts scoreFromProbability (score = -log10(p)/12·100).
+func probFromScore(score float64) float64 {
+	if score <= 0 {
+		return 1
+	}
+	if score >= 100 {
+		return 1e-12
+	}
+	return math.Pow(10, -score/100*12)
+}
+
 // suppressed applies job calendars + detector rules to one candidate record.
+// inCalendar reports whether a bucket time falls in any calendar window.
+func (e *Engine) inCalendar(bt time.Time) bool {
+	for _, c := range e.job.Calendars {
+		if !bt.Before(c.Start) && bt.Before(c.End) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Engine) suppressed(d jobspec.Detector, r core.Record) bool {
 	for _, c := range e.job.Calendars {
 		if !r.Time.Before(c.Start) && r.Time.Before(c.End) {
@@ -581,6 +729,14 @@ func (e *Engine) Push(p core.DataPoint) []core.BucketResult {
 	if !e.hasMark {
 		e.watermark, e.hasMark = bt, true
 	}
+	// A point whose bucket has already been closed and scored must be dropped:
+	// re-opening it would emit a duplicate, out-of-order BucketResult and pollute
+	// the baseline (which already learned that bucket). A late point whose bucket
+	// is still open (in the pending buffer) is fine to fold in.
+	if _, open := e.pending[bt]; !open && bt.Before(e.watermark) {
+		e.LateDropped++
+		return nil
+	}
 	var out []core.BucketResult
 	if bt.After(e.watermark) {
 		out = e.closeBefore(bt)
@@ -632,6 +788,13 @@ type Snapshot struct {
 	HasMark   bool                         `json:"has_mark"`
 	Models    map[string]detect.ModelState `json:"models"`
 	Rare      map[string]RareState         `json:"rare,omitempty"`
+	// The non-plain model families — persisted so seasonal/distribution/
+	// multivariate/time-of-day jobs survive a restart with their learned state
+	// instead of silently cold-starting.
+	Seasonal map[string]detect.SeasonalState     `json:"seasonal,omitempty"`
+	Distrib  map[string]detect.DistributionState `json:"distrib,omitempty"`
+	Multivar map[string]detect.MultivariateState `json:"multivar,omitempty"`
+	Slots    map[string]detect.ModelState        `json:"slots,omitempty"`
 }
 
 // RareState persists a rare detector's value frequencies.
@@ -654,6 +817,22 @@ func (e *Engine) Snapshot() Snapshot {
 		}
 		rs[k] = RareState{Buckets: tr.buckets, Seen: seen}
 	}
+	seas := make(map[string]detect.SeasonalState, len(e.seasonal))
+	for k, m := range e.seasonal {
+		seas[k] = m.State()
+	}
+	dist := make(map[string]detect.DistributionState, len(e.distrib))
+	for k, m := range e.distrib {
+		dist[k] = m.State()
+	}
+	mv := make(map[string]detect.MultivariateState, len(e.multivar))
+	for k, m := range e.multivar {
+		mv[k] = m.State()
+	}
+	slots := make(map[string]detect.ModelState, len(e.slotModels))
+	for k, m := range e.slotModels {
+		slots[k] = m.State()
+	}
 	return Snapshot{
 		JobName:   e.job.Name,
 		Threshold: e.threshold,
@@ -661,6 +840,10 @@ func (e *Engine) Snapshot() Snapshot {
 		HasMark:   e.hasMark,
 		Models:    ms,
 		Rare:      rs,
+		Seasonal:  seas,
+		Distrib:   dist,
+		Multivar:  mv,
+		Slots:     slots,
 	}
 }
 
@@ -683,5 +866,44 @@ func (e *Engine) Restore(s Snapshot) {
 			seen[v] = n
 		}
 		e.rare[k] = &rareTracker{buckets: st.Buckets, seen: seen}
+	}
+	e.seasonal = make(map[string]*detect.SeasonalModel, len(s.Seasonal))
+	for k, st := range s.Seasonal {
+		e.seasonal[k] = detect.SeasonalFromState(st, e.provider)
+	}
+	e.distrib = make(map[string]*detect.DistributionModel, len(s.Distrib))
+	for k, st := range s.Distrib {
+		e.distrib[k] = detect.DistributionFromState(st, e.provider)
+	}
+	e.multivar = make(map[string]*detect.MultivariateModel, len(s.Multivar))
+	for k, st := range s.Multivar {
+		e.multivar[k] = detect.MultivariateFromState(st)
+	}
+	e.slotModels = make(map[string]*detect.Model, len(s.Slots))
+	for k, st := range s.Slots {
+		e.slotModels[k] = detect.ModelFromState(st)
+	}
+	// Re-seed the LRU so restored models are subject to the same memory bound.
+	e.seriesLRU = make(map[string]int64)
+	e.lruTick = 0
+	for k := range e.models {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
+	}
+	for k := range e.seasonal {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
+	}
+	for k := range e.distrib {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
+	}
+	for k := range e.multivar {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
+	}
+	for k := range e.slotModels {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
 	}
 }

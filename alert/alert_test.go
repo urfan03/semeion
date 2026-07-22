@@ -201,3 +201,17 @@ func TestStdoutSink(t *testing.T) {
 		t.Fatalf("unexpected output: %q", b.String())
 	}
 }
+
+// P2a regression: a webhook/Slack transport error must not leak the secret URL.
+func TestSinkErrorRedactsSecretURL(t *testing.T) {
+	// Nothing listens here, so Do() fails with a transport error carrying the URL.
+	secret := "https://hooks.slack.com/services/T00/B00/XXXSECRETXXX"
+	s := &SlackSink{WebhookURL: secret}
+	err := s.Send(context.Background(), Alert{Job: "j", Score: 90})
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), "XXXSECRETXXX") {
+		t.Fatalf("error leaked the webhook secret: %v", err)
+	}
+}

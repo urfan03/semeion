@@ -193,7 +193,9 @@ func (s *Server) publish(ctx context.Context, lj *liveJob, closed []core.BucketR
 	s.mu.Unlock()
 
 	if n != nil {
-		if _, err := n.Notify(ctx, lj.Name, kept); err != nil && s.onAlertError != nil {
+		sent, err := n.Notify(ctx, lj.Name, kept)
+		s.alertsSent.Add(int64(sent))
+		if err != nil && s.onAlertError != nil {
 			s.onAlertError(err)
 		}
 	}

@@ -16,16 +16,19 @@ import (
 type Function string
 
 const (
-	FuncCount       Function = "count"
-	FuncSum         Function = "sum"
-	FuncMean        Function = "mean"
-	FuncMin         Function = "min"
-	FuncMax         Function = "max"
-	FuncMedian      Function = "median"
-	FuncRare        Function = "rare"         // rare values of by_field (over time)
-	FuncInfoContent Function = "info_content" // entropy of by_field's value distribution
-	FuncTimeOfDay   Function = "time_of_day"  // events at an unusual hour-of-day
-	FuncTimeOfWeek  Function = "time_of_week" // events at an unusual hour-of-week
+	FuncCount         Function = "count"
+	FuncSum           Function = "sum"
+	FuncMean          Function = "mean"
+	FuncMin           Function = "min"
+	FuncMax           Function = "max"
+	FuncMedian        Function = "median"
+	FuncDistinctCount Function = "distinct_count" // cardinality of field's values in the bucket
+	FuncNonZeroCount  Function = "non_zero_count" // count of non-zero field values
+	FuncVarp          Function = "varp"           // population variance of the field
+	FuncRare          Function = "rare"           // rare values of by_field (over time)
+	FuncInfoContent   Function = "info_content"   // entropy of by_field's value distribution
+	FuncTimeOfDay     Function = "time_of_day"    // events at an unusual hour-of-day
+	FuncTimeOfWeek    Function = "time_of_week"   // events at an unusual hour-of-week
 )
 
 // Side controls which deviations count as anomalous — the equivalent of
@@ -99,7 +102,7 @@ func (d Detector) NeedsField() bool {
 		return false // uses Fields (a metric vector), not a single Field
 	}
 	switch d.Function {
-	case FuncMean, FuncSum, FuncMin, FuncMax, FuncMedian:
+	case FuncMean, FuncSum, FuncMin, FuncMax, FuncMedian, FuncDistinctCount, FuncNonZeroCount, FuncVarp:
 		return true
 	}
 	return false

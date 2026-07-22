@@ -35,6 +35,24 @@ type Graph struct {
 	nodes map[string]*Node
 	// MaxSamples bounds the per-edge latency sample used for the median.
 	MaxSamples int
+
+	// A persistent span index so a parent and its child resolve into an edge
+	// even when they arrive in SEPARATE Observe batches — the normal case with
+	// per-service OTLP collectors. `spans` maps traceID\x00spanID → the span's
+	// service; `orphans` buffers children whose parent hasn't been seen yet,
+	// keyed by the parent's traceID\x00spanID. Both are bounded (MaxSpans).
+	spans    map[string]spanMeta
+	orphans  map[string][]spanMeta
+	spanFIFO []string // insertion order for eviction
+	MaxSpans int
+}
+
+// spanMeta is the part of a span the edge stats need, kept in the index.
+type spanMeta struct {
+	service string
+	err     bool
+	start   time.Time
+	durMs   float64
 }
 
 // Node is a service and its observed traffic.
@@ -47,21 +65,66 @@ type Node struct {
 
 // New returns an empty graph.
 func New() *Graph {
-	return &Graph{edges: map[string]*Edge{}, nodes: map[string]*Node{}, MaxSamples: 1000}
+	return &Graph{
+		edges: map[string]*Edge{}, nodes: map[string]*Node{}, MaxSamples: 1000,
+		spans: map[string]spanMeta{}, orphans: map[string][]spanMeta{}, MaxSpans: 200_000,
+	}
 }
 
-// Observe folds a batch of spans into the graph. Parent lookup is per trace, so
-// a batch that only carries part of a trace simply contributes fewer edges — it
-// never invents one.
-func (g *Graph) Observe(spans []otlp.Span) {
-	byID := make(map[string]otlp.Span, len(spans))
-	for _, s := range spans {
-		byID[s.TraceID+"\x00"+s.SpanID] = s
-	}
+// Snapshot is a serializable copy of the graph for persistence.
+type Snapshot struct {
+	Edges []EdgeSnap `json:"edges"`
+	Nodes []Node     `json:"nodes"`
+}
 
+// EdgeSnap carries an edge plus its latency samples (which Edge hides).
+type EdgeSnap struct {
+	Edge
+	Durations []float64 `json:"durations,omitempty"`
+}
+
+// Snapshot returns a serializable copy of the graph.
+func (g *Graph) Snapshot() Snapshot {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	s := Snapshot{Edges: make([]EdgeSnap, 0, len(g.edges)), Nodes: make([]Node, 0, len(g.nodes))}
+	for _, e := range g.edges {
+		s.Edges = append(s.Edges, EdgeSnap{Edge: *e, Durations: append([]float64(nil), e.durations...)})
+	}
+	for _, n := range g.nodes {
+		s.Nodes = append(s.Nodes, *n)
+	}
+	return s
+}
+
+// Restore replaces the graph's contents with a snapshot.
+func (g *Graph) Restore(s Snapshot) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.edges = make(map[string]*Edge, len(s.Edges))
+	g.nodes = make(map[string]*Node, len(s.Nodes))
+	for _, es := range s.Edges {
+		e := es.Edge
+		e.durations = append([]float64(nil), es.Durations...)
+		g.edges[e.Caller+"\x00"+e.Callee] = &e
+	}
+	for i := range s.Nodes {
+		n := s.Nodes[i]
+		g.nodes[n.Name] = &n
+	}
+}
+
+// Observe folds a batch of spans into the graph. Cross-service edges resolve
+// through a persistent span index, so a caller and its callee produce an edge
+// even when they arrive in different batches (per-service collectors) or out of
+// order (child before parent) — without ever inventing an edge.
+func (g *Graph) Observe(spans []otlp.Span) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, s := range spans {
+		if s.SpanID == "" || s.Service == "" {
+			continue
+		}
 		n := g.nodes[s.Service]
 		if n == nil {
 			n = &Node{Name: s.Service}
@@ -75,29 +138,92 @@ func (g *Graph) Observe(spans []otlp.Span) {
 			n.LastAt = s.Start
 		}
 
+		self := spanMeta{service: s.Service, err: s.Error, start: s.Start}
+		if d := s.Duration(); d > 0 {
+			self.durMs = float64(d) / float64(time.Millisecond)
+		}
+		id := s.TraceID + "\x00" + s.SpanID
+		g.indexSpan(id, self)
+
+		// This span may be the parent some earlier orphan child was waiting for.
+		if kids, ok := g.orphans[id]; ok {
+			for _, kid := range kids {
+				g.addEdge(self.service, kid)
+			}
+			delete(g.orphans, id)
+		}
+
 		if s.ParentID == "" {
 			continue
 		}
-		parent, ok := byID[s.TraceID+"\x00"+s.ParentID]
-		if !ok || parent.Service == "" || parent.Service == s.Service {
-			// An unresolved parent, or an internal span: no cross-service edge.
-			continue
+		pid := s.TraceID + "\x00" + s.ParentID
+		if parent, ok := g.spans[pid]; ok {
+			g.addEdge(parent.service, self) // parent already seen
+		} else {
+			// Parent not seen yet: buffer this child until it arrives.
+			g.orphans[pid] = append(g.orphans[pid], self)
+			g.trimOrphans()
 		}
-		key := parent.Service + "\x00" + s.Service
-		e := g.edges[key]
-		if e == nil {
-			e = &Edge{Caller: parent.Service, Callee: s.Service}
-			g.edges[key] = e
-		}
-		e.Calls++
-		if s.Error {
-			e.Errors++
-		}
-		if s.Start.After(e.LastAt) {
-			e.LastAt = s.Start
-		}
-		if d := s.Duration(); d > 0 && len(e.durations) < g.maxSamples() {
-			e.durations = append(e.durations, float64(d)/float64(time.Millisecond))
+	}
+}
+
+// addEdge records (or updates) a caller→callee edge using the callee span's
+// error/latency. An internal (same-service) span makes no cross-service edge.
+func (g *Graph) addEdge(caller string, callee spanMeta) {
+	if caller == "" || callee.service == "" || caller == callee.service {
+		return
+	}
+	key := caller + "\x00" + callee.service
+	e := g.edges[key]
+	if e == nil {
+		e = &Edge{Caller: caller, Callee: callee.service}
+		g.edges[key] = e
+	}
+	e.Calls++
+	if callee.err {
+		e.Errors++
+	}
+	if callee.start.After(e.LastAt) {
+		e.LastAt = callee.start
+	}
+	if callee.durMs > 0 && len(e.durations) < g.maxSamples() {
+		e.durations = append(e.durations, callee.durMs)
+	}
+}
+
+// indexSpan records a span in the bounded index, evicting the oldest when full.
+func (g *Graph) indexSpan(id string, m spanMeta) {
+	if _, exists := g.spans[id]; !exists {
+		g.spanFIFO = append(g.spanFIFO, id)
+	}
+	g.spans[id] = m
+	max := g.MaxSpans
+	if max <= 0 {
+		max = 200_000
+	}
+	for len(g.spanFIFO) > max {
+		old := g.spanFIFO[0]
+		g.spanFIFO = g.spanFIFO[1:]
+		delete(g.spans, old)
+	}
+}
+
+// trimOrphans bounds the orphan buffer; unresolved children are dropped oldest-
+// first (a parent that never arrives simply yields no edge).
+func (g *Graph) trimOrphans() {
+	max := g.MaxSpans
+	if max <= 0 {
+		max = 200_000
+	}
+	if len(g.orphans) <= max {
+		return
+	}
+	// Cheap bound: when far over, clear — orphans are transient resolution state,
+	// never a data source, so dropping them only forgoes some edges.
+	for k := range g.orphans {
+		delete(g.orphans, k)
+		if len(g.orphans) <= max*3/4 {
+			break
 		}
 	}
 }

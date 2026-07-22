@@ -30,6 +30,8 @@ type Provider interface {
 	Decompose(series []float64, period int) Decomposition
 	// Forecast projects the series horizon steps ahead.
 	Forecast(series []float64, horizon int) []float64
+	// ForecastBands is Forecast with a prediction interval per step.
+	ForecastBands(series []float64, horizon int) []Band
 	// ChangePoints returns indices where the series' mean level shifts.
 	ChangePoints(series []float64) []int
 	// FitDistribution selects the best-fit distribution for the samples.
@@ -45,16 +47,23 @@ func NewGoProvider() *GoProvider { return &GoProvider{} }
 func (GoProvider) DetectSeasonality(series []float64) []int       { return detectSeasonality(series) }
 func (GoProvider) Decompose(s []float64, p int) Decomposition     { return decompose(s, p) }
 func (GoProvider) Forecast(s []float64, h int) []float64          { return forecast(s, h) }
+func (GoProvider) ForecastBands(s []float64, h int) []Band        { return forecastBands(s, h) }
 func (GoProvider) ChangePoints(s []float64) []int                 { return changePoints(s) }
 func (GoProvider) FitDistribution(samples []float64) Distribution { return fitDistribution(samples) }
 
 // ── Seasonality: autocorrelation, first prominent peak ───────────────────────
 
-func detectSeasonality(x []float64) []int {
-	n := len(x)
+func detectSeasonality(raw []float64) []int {
+	n := len(raw)
 	if n < 8 {
 		return nil
 	}
+	// Detrend first: the autocorrelation of a trending series stays high and
+	// slowly descending, which masks the seasonal peak (a sine + strong trend
+	// would otherwise report NO period). Removing the linear fit exposes the
+	// cyclic component. A pure step/level is left mostly intact, which is fine —
+	// seasonality is judged on the oscillation around the trend.
+	x := detrend(raw)
 	mean := meanOf(x)
 	var den float64
 	for _, v := range x {
@@ -76,15 +85,20 @@ func detectSeasonality(x []float64) []int {
 		}
 		acf[lag] = num / den
 	}
-	// The period is the first prominent local maximum (lag ≥ 2): ACF descends
-	// from lag 0, dips, then peaks again at the period. Requiring a rise into the
-	// peak avoids picking the high-but-descending small lags.
+	// Collect the prominent local maxima (lag ≥ 2), ascending. The ACF of a
+	// signal with nested cycles (e.g. daily AND weekly) peaks at each period and
+	// its harmonics; returning them all lets the caller pick — a longer period
+	// whose phases subsume the shorter cycle captures BOTH seasonalities.
+	var peaks []int
 	for lag := 2; lag < maxLag; lag++ {
 		if acf[lag] >= 0.3 && acf[lag] > acf[lag-1] && acf[lag] >= acf[lag+1] {
-			return []int{lag}
+			peaks = append(peaks, lag)
+			if len(peaks) >= 6 {
+				break
+			}
 		}
 	}
-	return nil
+	return peaks
 }
 
 // ── Additive decomposition ───────────────────────────────────────────────────
@@ -172,6 +186,51 @@ func forecast(x []float64, horizon int) []float64 {
 	return out
 }
 
+// Band is a forecast point with a prediction interval.
+type Band struct {
+	Point float64 `json:"point"`
+	Lower float64 `json:"lower"`
+	Upper float64 `json:"upper"`
+}
+
+// forecastBands wraps the point forecast with a 95% prediction interval derived
+// from the in-sample residual spread, widened with the horizon (uncertainty
+// grows the further out you project). This is the headline Elastic ML forecast
+// output — a point value alone is not actionable.
+func forecastBands(x []float64, horizon int) []Band {
+	pts := forecast(x, horizon)
+	bands := make([]Band, len(pts))
+	sd := residualStd(x)
+	const z = 1.96 // ~95%
+	for h := range pts {
+		// Widen ∝ √(1 + h/n): the one-step interval grows toward a random-walk
+		// band as the horizon extends.
+		w := z * sd * math.Sqrt(1+float64(h)/math.Max(1, float64(len(x))))
+		bands[h] = Band{Point: pts[h], Lower: pts[h] - w, Upper: pts[h] + w}
+	}
+	return bands
+}
+
+// residualStd is the std of the series' residuals after removing trend (and
+// seasonality when present) — the noise the forecast can't explain.
+func residualStd(x []float64) float64 {
+	if len(x) < 3 {
+		return 0
+	}
+	var resid []float64
+	if periods := detectSeasonality(x); len(periods) > 0 {
+		resid = decompose(x, periods[0]).Resid
+	} else {
+		slope, intercept := linFit(x)
+		resid = make([]float64, len(x))
+		for i, v := range x {
+			resid[i] = v - (intercept + slope*float64(i))
+		}
+	}
+	_, sd := meanStd(resid)
+	return sd
+}
+
 // linFit is the least-squares line (slope, intercept) of y over its index.
 func linFit(y []float64) (slope, intercept float64) {
 	n := len(y)
@@ -232,33 +291,71 @@ func changePoints(x []float64) []int {
 	return out
 }
 
-// bestSplit returns the split offset maximising the mean-difference statistic
-// over sub, and that statistic. Offset k means left=sub[:k], right=sub[k:].
+// bestSplit finds the split that best models sub as two constant levels, and
+// scores it by how much better that two-level model fits than a single LINEAR
+// trend. Scoring against a trend (not against a flat mean) is what stops a
+// smooth ramp from being reported as a staircase of steps: a ramp is explained
+// by the line (so the two-level model wins nothing), while a genuine level shift
+// is not (a line can't fit a step). Offset k means left=sub[:k], right=sub[k:].
 func bestSplit(sub []float64) (int, float64) {
 	n := len(sub)
 	if n < 2*cpMinSeg {
 		return -1, 0
 	}
-	_, sd := meanStd(sub)
-	if sd == 0 {
-		return -1, 0
+	// Residual SSE of the single-line (trend) model — the null hypothesis.
+	sseLine := sseLinear(sub)
+	if sseLine <= 0 {
+		return -1, 0 // a perfect line: nothing to explain with a step
 	}
-	// prefix sums for O(1) segment means
 	prefix := make([]float64, n+1)
+	sqPrefix := make([]float64, n+1)
 	for i, v := range sub {
 		prefix[i+1] = prefix[i] + v
+		sqPrefix[i+1] = sqPrefix[i] + v*v
 	}
-	bestK, bestScore := -1, 0.0
+	// SSE of a two-constant model split at k, via prefix sums.
+	sseSplit := func(k int) float64 {
+		sumL, sumR := prefix[k], prefix[n]-prefix[k]
+		sqL, sqR := sqPrefix[k], sqPrefix[n]-sqPrefix[k]
+		return (sqL - sumL*sumL/float64(k)) + (sqR - sumR*sumR/float64(n-k))
+	}
+	bestK, bestSSE := -1, math.Inf(1)
 	for k := cpMinSeg; k <= n-cpMinSeg; k++ {
-		meanL := prefix[k] / float64(k)
-		meanR := (prefix[n] - prefix[k]) / float64(n-k)
-		w := math.Sqrt(float64(k) * float64(n-k) / float64(n))
-		score := math.Abs(meanR-meanL) * w / sd
-		if score > bestScore {
-			bestK, bestScore = k, score
+		if s := sseSplit(k); s < bestSSE {
+			bestK, bestSSE = k, s
 		}
 	}
-	return bestK, bestScore
+	if bestK < 0 {
+		return -1, 0
+	}
+	// F-like statistic: how much the two-level model reduces residual error
+	// relative to the trend model. Large only for a real step.
+	score := (sseLine - bestSSE) / (bestSSE/float64(n-2) + 1e-9)
+	return bestK, score
+}
+
+// detrend subtracts the global least-squares linear fit from x.
+func detrend(x []float64) []float64 {
+	if len(x) < 3 {
+		return append([]float64(nil), x...)
+	}
+	slope, intercept := linFit(x)
+	res := make([]float64, len(x))
+	for i, v := range x {
+		res[i] = v - (intercept + slope*float64(i))
+	}
+	return res
+}
+
+// sseLinear returns the residual sum of squares of the least-squares line fit.
+func sseLinear(y []float64) float64 {
+	slope, intercept := linFit(y)
+	var sse float64
+	for i, v := range y {
+		r := v - (intercept + slope*float64(i))
+		sse += r * r
+	}
+	return sse
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

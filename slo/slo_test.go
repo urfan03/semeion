@@ -91,13 +91,15 @@ func TestRecentSpikeRaisesShortWindowBurn(t *testing.T) {
 	}
 }
 
-func TestNoTrafficIsPerfect(t *testing.T) {
+// P1-L4 regression: no traffic is "no data", NOT healthy. A service that stopped
+// emitting (an outage that also killed its exporter) must not read as green.
+func TestNoTrafficIsNoData(t *testing.T) {
 	r := Evaluate(Target{Objective: 0.999, Window: day}, nil, now)
-	if r.SLI != 1.0 || r.Severity != "ok" {
-		t.Errorf("no traffic should read as perfect, got SLI=%.3f sev=%q", r.SLI, r.Severity)
+	if !r.NoData || r.Severity != "no_data" {
+		t.Errorf("no traffic should report no_data, got NoData=%v sev=%q", r.NoData, r.Severity)
 	}
 	if r.Exhaustion != nil {
-		t.Error("nothing burning → no exhaustion")
+		t.Error("no data → no exhaustion projection")
 	}
 }
 

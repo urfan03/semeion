@@ -5,6 +5,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urfan03/semeion/alert"
@@ -57,6 +59,30 @@ type Server struct {
 
 	// onAlertError reports a failing sink without touching detection.
 	onAlertError func(error)
+
+	// alertsSent counts alerts delivered to sinks (record + lifecycle), for /metrics.
+	alertsSent atomic.Int64
+
+	// authToken, when set, is required as a bearer token on every endpoint
+	// except /healthz and /metrics. limiter, when set, rate-limits the API.
+	authToken string
+	limiter   *rateLimiter
+}
+
+// WithAuthToken requires this bearer token on all API endpoints (health and
+// metrics stay open). Empty leaves the API unauthenticated.
+func (s *Server) WithAuthToken(token string) *Server {
+	s.authToken = token
+	return s
+}
+
+// WithRateLimit caps sustained request rate at rps (with a burst of 2×rps).
+// Zero disables limiting.
+func (s *Server) WithRateLimit(rps float64) *Server {
+	if rps > 0 {
+		s.limiter = newRateLimiter(rps, rps*2)
+	}
+	return s
 }
 
 // NewServer builds a server with the default (pure-Go) model provider.
@@ -122,9 +148,65 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/otlp/v1/logs", s.handleOTLPLogs)
 	mux.HandleFunc("/v1/otlp/v1/traces", s.handleOTLPTraces)
 	mux.HandleFunc("/v1/topology", s.handleTopology)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", s.handleUI)
-	return mux
+
+	// Middleware chain (outermost first): cap request bodies, rate-limit, then
+	// require the auth token. /healthz and /metrics stay open for probes/scrape.
+	var h http.Handler = mux
+	h = s.withAuth(h)
+	h = s.withRateLimit(h)
+	h = withBodyLimit(h)
+	return h
+}
+
+// withBodyLimit caps every request body so a single large unauthenticated POST
+// (e.g. to /v1/analyze or /v1/jobs/{name}/points, which decode straight from the
+// body) cannot exhaust memory.
+func withBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withAuth requires a bearer token on all endpoints except health/metrics, when
+// a token is configured (WithAuthToken). With no token set, the API is open —
+// the same default as before, so existing deployments are unaffected until they
+// opt in.
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
+			httpError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withRateLimit applies a simple token-bucket limiter across the API when one is
+// configured (WithRateLimit). Health/metrics are exempt.
+func (s *Server) withRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.limiter == nil || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.limiter.allow() {
+			w.Header().Set("Retry-After", "1")
+			httpError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ── handlers ─────────────────────────────────────────────────────────────────
@@ -219,6 +301,7 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"periods":  s.provider.DetectSeasonality(req.Series),
 		"forecast": s.provider.Forecast(req.Series, req.Horizon),
+		"bands":    s.provider.ForecastBands(req.Series, req.Horizon),
 	})
 }
 

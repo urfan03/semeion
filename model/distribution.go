@@ -32,7 +32,13 @@ func (d Distribution) Tail(x float64) float64 {
 		lower := 0.5 * math.Erfc(-(math.Log(x)-mu)/(sd*math.Sqrt2))
 		p = 2 * math.Min(lower, 1-lower)
 	case "exponential":
-		// Right-skewed with its mode at 0, so only the UPPER tail is anomalous.
+		// Two-sided, consistent with the other families: p = 2·min(P(X≤x),P(X≥x)).
+		// Exponential is used as a fit to POSITIVE metric data (latency, size,
+		// throughput) whose normal operating range sits around the mean, not at
+		// zero — so a collapse toward zero (an outage) IS anomalous and must score
+		// like it does under lognormal/normal. A one-sided (high) detector still
+		// suppresses the lower direction upstream, so genuine upper-tail-only use
+		// (inter-arrival times) is unaffected.
 		rate := d.Params[0]
 		if rate <= 0 {
 			return 1
@@ -40,7 +46,9 @@ func (d Distribution) Tail(x float64) float64 {
 		if x < 0 {
 			return 1
 		}
-		p = math.Exp(-rate * x) // survival P(X >= x); x=0 → 1
+		upper := math.Exp(-rate * x) // P(X ≥ x)
+		lower := 1 - upper           // P(X ≤ x)
+		p = 2 * math.Min(lower, upper)
 	case "poisson":
 		lambda := d.Params[0]
 		if lambda <= 0 {
@@ -80,10 +88,21 @@ func fitDistribution(x []float64) Distribution {
 		}
 	}
 
+	// Select by AIC = 2k − 2·logL (lower is better), so a 2-parameter family
+	// (normal, lognormal) must earn its extra parameter over a 1-parameter one
+	// (exponential, poisson) rather than winning on raw likelihood alone. AIC
+	// across a continuous density and a discrete pmf is still only a heuristic
+	// (different base measures), but it removes the parameter-count bias and
+	// matches standard practice.
 	best := Distribution{Family: "normal", Params: []float64{mean, sd}, LogLik: normalLogLik(x, mean, sd)}
+	bestAIC := aic(2, best.LogLik)
+	consider := func(fam string, k int, params []float64, ll float64) {
+		if a := aic(k, ll); a < bestAIC {
+			best, bestAIC = Distribution{Family: fam, Params: params, LogLik: ll}, a
+		}
+	}
 
 	if allPos {
-		// lognormal: fit on ln(x)
 		var s, s2 float64
 		for _, v := range x {
 			l := math.Log(v)
@@ -93,26 +112,22 @@ func fitDistribution(x []float64) Distribution {
 		lm := s / float64(n)
 		lsd := math.Sqrt(math.Max(0, s2/float64(n)-lm*lm))
 		if lsd > 0 {
-			ll := lognormalLogLik(x, lm, lsd)
-			if ll > best.LogLik {
-				best = Distribution{Family: "lognormal", Params: []float64{lm, lsd}, LogLik: ll}
-			}
+			consider("lognormal", 2, []float64{lm, lsd}, lognormalLogLik(x, lm, lsd))
 		}
 	}
 	if allNonNeg && mean > 0 {
 		rate := 1 / mean
-		ll := exponentialLogLik(x, rate)
-		if ll > best.LogLik {
-			best = Distribution{Family: "exponential", Params: []float64{rate}, LogLik: ll}
-		}
+		consider("exponential", 1, []float64{rate}, exponentialLogLik(x, rate))
 	}
 	if allNonNeg && allInt && mean > 0 {
-		ll := poissonLogLik(x, mean)
-		if ll > best.LogLik {
-			best = Distribution{Family: "poisson", Params: []float64{mean}, LogLik: ll}
-		}
+		consider("poisson", 1, []float64{mean}, poissonLogLik(x, mean))
 	}
 	return best
+}
+
+// aic is the Akaike information criterion: 2·params − 2·logLikelihood.
+func aic(k int, logLik float64) float64 {
+	return 2*float64(k) - 2*logLik
 }
 
 func normalLogLik(x []float64, mu, sd float64) float64 {

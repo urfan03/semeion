@@ -130,7 +130,11 @@ func (s *Server) reconcile(ctx context.Context, incidents []correlate.Incident) 
 		return events
 	}
 	for _, ev := range events {
-		if _, err := n.Deliver(ctx, incidentAlert(ev)); err != nil && s.onAlertError != nil {
+		delivered, err := n.Deliver(ctx, incidentAlert(ev))
+		if delivered {
+			s.alertsSent.Add(1)
+		}
+		if err != nil && s.onAlertError != nil {
 			s.onAlertError(err)
 		}
 	}

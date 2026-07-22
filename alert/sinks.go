@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -37,7 +38,10 @@ func postJSON(ctx context.Context, c *http.Client, url string, body any, headers
 	}
 	resp, err := httpClient(c).Do(req)
 	if err != nil {
-		return err
+		// A transport error's message embeds the full request URL, and a Slack /
+		// generic webhook URL IS the secret. Redact it so an outage doesn't write
+		// the credential to logs on every retry.
+		return fmt.Errorf("POST failed: %s", redactURL(err.Error(), url))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -46,6 +50,19 @@ func postJSON(ctx context.Context, c *http.Client, url string, body any, headers
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// redactURL replaces occurrences of the (secret-bearing) URL in a message with
+// a scheme+host-only form, so error logs never carry the full credential.
+func redactURL(msg, full string) string {
+	if full == "" {
+		return msg
+	}
+	safe := full
+	if u, err := neturl.Parse(full); err == nil && u.Host != "" {
+		safe = u.Scheme + "://" + u.Host + "/…"
+	}
+	return strings.ReplaceAll(msg, full, safe)
 }
 
 // ── Slack ────────────────────────────────────────────────────────────────────

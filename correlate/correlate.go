@@ -222,13 +222,14 @@ type item struct {
 func group(items []item, opt Options) [][]int {
 	uf := newUnionFind(len(items))
 	w, cw := opt.window(), opt.coWindow()
+	coarse := coarseEntities(items) // entity values too common to link on
 	for i := range items {
 		for j := i - 1; j >= 0; j-- {
 			gap := items[i].sym.Time.Sub(items[j].sym.Time)
 			if gap > w {
 				break // everything earlier is further away still
 			}
-			if linked(items[i].sym, items[j].sym, gap, cw, opt) {
+			if linked(items[i].sym, items[j].sym, gap, cw, opt, coarse) {
 				uf.union(i, j)
 			}
 		}
@@ -252,8 +253,8 @@ func group(items []item, opt Options) [][]int {
 // and only within the tighter window: two unrelated services degrading at the
 // same moment is usually one upstream cause, but two records from the same job
 // on different entities are usually just two independent problems.
-func linked(a, b Symptom, gap, coWindow time.Duration, opt Options) bool {
-	if sharesEntity(a, b) {
+func linked(a, b Symptom, gap, coWindow time.Duration, opt Options, coarse map[string]bool) bool {
+	if sharesEntity(a, b, coarse) {
 		return true
 	}
 	// A caller and its callee failing together is one incident, however far
@@ -269,11 +270,47 @@ func linked(a, b Symptom, gap, coWindow time.Duration, opt Options) bool {
 	return a.Job != b.Job
 }
 
-func sharesEntity(a, b Symptom) bool {
+// coarseEntityFraction: an entity value carried by more than this share of all
+// symptoms is an attribute (env=prod, region=us-east), not an identity, and must
+// not link everything into one mega-incident. It is treated like a stopword.
+const coarseEntityFraction = 0.5
+
+// coarseEntities returns the set of "key=value" entity tags too common to be a
+// meaningful linking key. Below a handful of symptoms every tag is kept (there
+// is no crowd to be common within).
+func coarseEntities(items []item) map[string]bool {
+	n := 0
+	freq := map[string]int{}
+	for _, it := range items {
+		if it.change >= 0 {
+			continue // count symptoms only
+		}
+		n++
+		for k, v := range it.sym.Entities {
+			freq[k+"="+v]++
+		}
+	}
+	coarse := map[string]bool{}
+	if n < 4 {
+		return coarse
+	}
+	limit := int(coarseEntityFraction * float64(n))
+	for tag, c := range freq {
+		if c > limit {
+			coarse[tag] = true
+		}
+	}
+	return coarse
+}
+
+func sharesEntity(a, b Symptom, coarse map[string]bool) bool {
 	if len(a.Entities) == 0 || len(b.Entities) == 0 {
 		return false
 	}
 	for k, v := range a.Entities {
+		if coarse[k+"="+v] {
+			continue // an attribute shared by most symptoms is not an identity
+		}
 		if bv, ok := b.Entities[k]; ok && bv == v {
 			return true
 		}
@@ -343,6 +380,17 @@ func rank(idx []int, items []item, changes []Change, inc Incident, opt Options) 
 		return nil
 	}
 	span := inc.End.Sub(inc.Start)
+
+	// The onset of the incident = the earliest actual symptom (not counting
+	// changes, which may sit before it). A change can only be a *cause* if it
+	// precedes this; a change after it is a remediation, not an origin.
+	firstSymptom := inc.End
+	for _, i := range idx {
+		if items[i].change < 0 && items[i].sym.Time.Before(firstSymptom) {
+			firstSymptom = items[i].sym.Time
+		}
+	}
+
 	cands := make([]Candidate, 0, len(idx))
 	for _, i := range idx {
 		s := items[i].sym
@@ -362,10 +410,16 @@ func rank(idx []int, items []item, changes []Change, inc Incident, opt Options) 
 			reasons = append(reasons, fmt.Sprintf("early (%.0fs after the start)", s.Time.Sub(inc.Start).Seconds()))
 		}
 
-		// Deliberate change.
+		// Deliberate change — but only a cause if it PRECEDES the first symptom.
+		// A change during the incident is almost always a remediation, not the
+		// origin, so it gets no causal credit (and must not be "roll back"-ed).
 		if ci := items[i].change; ci >= 0 {
-			score += 0.30
-			reasons = append(reasons, "deliberate change ("+changes[ci].Name+")")
+			if !changes[ci].Time.After(firstSymptom) {
+				score += 0.30
+				reasons = append(reasons, "deliberate change preceding the incident ("+changes[ci].Name+")")
+			} else {
+				reasons = append(reasons, "change during the incident ("+changes[ci].Name+"), after symptoms began — not a likely cause")
+			}
 		}
 
 		// Topological position: how many of the other affected services depend
@@ -418,11 +472,18 @@ func rank(idx []int, items []item, changes []Change, inc Incident, opt Options) 
 		}
 		return cands[i].Symptom.Time.Before(cands[j].Symptom.Time)
 	})
-	// Normalize so the leader reads as 1.0 — the number is a ranking, not a
-	// probability, and presenting it as one would be a lie.
-	if top := cands[0].Confidence; top > 0 {
+	// Confidence = each candidate's SHARE of the total evidence weight, so the
+	// leader's number reflects how much it dominates the alternatives: a lone
+	// cause reads ~1.0, a genuine coin-flip between two reads ~0.5 each. (The old
+	// normalize-to-max pinned the leader to 1.0 always, hiding the margin — the
+	// only thing that actually matters — behind fabricated certainty.)
+	var total float64
+	for _, c := range cands {
+		total += c.Confidence
+	}
+	if total > 0 {
 		for i := range cands {
-			cands[i].Confidence = cands[i].Confidence / top
+			cands[i].Confidence /= total
 		}
 	}
 	if len(cands) > 5 {

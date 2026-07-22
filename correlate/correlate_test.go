@@ -41,8 +41,15 @@ func TestOneIncidentAcrossSignalsWithTheDeployOnTop(t *testing.T) {
 	if top.Change == nil || top.Change.Name != "checkout v2.3.1" {
 		t.Fatalf("the deploy should rank first, got %+v", top)
 	}
-	if top.Confidence != 1 {
-		t.Errorf("the leader's confidence should normalize to 1, got %v", top.Confidence)
+	// Confidence is now a share of the total evidence weight: the leader must be
+	// the largest share, in (0,1], and strictly the highest of the candidates.
+	if top.Confidence <= 0 || top.Confidence > 1 {
+		t.Errorf("leader confidence should be a share in (0,1], got %v", top.Confidence)
+	}
+	for _, c := range got.RootCause[1:] {
+		if c.Confidence > top.Confidence {
+			t.Errorf("leader must have the highest confidence share, got %v > %v", c.Confidence, top.Confidence)
+		}
 	}
 	if !strings.Contains(strings.Join(top.Reasons, "; "), "deliberate change") {
 		t.Errorf("reasons must explain the ranking: %v", top.Reasons)

@@ -162,3 +162,26 @@ func TestTrackerMatchesByOverlapAsIncidentGrows(t *testing.T) {
 		t.Fatalf("expected 1 incident, got %d", len(tr.Open()))
 	}
 }
+
+// P1-L5 regression: a spreading incident (some entities recover, new ones join)
+// must stay ONE incident, not flap into resolve+new. Jaccard would drop below
+// 0.5 as the set churns; the overlap coefficient keeps it matched.
+func TestTrackerDoesNotFlapAsIncidentSpreads(t *testing.T) {
+	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(c)
+
+	ev := tr.Reconcile([]Incident{inc("a", c.now(), 90, "host=web-1", "host=web-2")})
+	id := ev[0].Incident.ID
+
+	c.add(time.Minute)
+	// web-1 recovered; web-3, web-4 joined. Jaccard({1,2},{2,3,4})=0.25<0.5, but
+	// overlap coefficient = 1/2 = 0.5 → still the same incident.
+	ev = tr.Reconcile([]Incident{inc("a2", c.now(), 90, "host=web-2", "host=web-3", "host=web-4")})
+	if len(ev) != 0 {
+		t.Fatalf("a spreading incident must not open a new one, got %+v", ev)
+	}
+	open := tr.Open()
+	if len(open) != 1 || open[0].ID != id {
+		t.Fatalf("incident identity should persist as it spreads: %+v", open)
+	}
+}

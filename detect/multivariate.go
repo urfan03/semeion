@@ -55,10 +55,24 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	score = scoreFromProbability(prob)
 	dist = math.Sqrt(m2)
 
+	// Per-metric contribution. The raw quadratic-form terms dᵢ·(Σ⁻¹d)ᵢ can be
+	// negative for correlated metrics (off-diagonal Σ⁻¹ entries), which is
+	// meaningless as a "share". Clamp to non-negative and renormalize so the
+	// contributions are a genuine 0..1 attribution that sums to 1 — an operator
+	// can read "metric X drove 70% of it".
 	contrib = make([]float64, m.k)
 	if m2 > 0 {
+		var pos float64
 		for i := range d {
-			contrib[i] = d[i] * iv[i] / m2
+			if c := d[i] * iv[i]; c > 0 {
+				contrib[i] = c
+				pos += c
+			}
+		}
+		if pos > 0 {
+			for i := range contrib {
+				contrib[i] /= pos
+			}
 		}
 	}
 	m.push(vec)

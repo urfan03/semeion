@@ -88,6 +88,13 @@ go run ./cmd/semeion run --job job.json --csv data.csv --state ./state.json
 # server: REST API + the built-in Anomaly Explorer UI on http://localhost:8080
 go run ./cmd/semeion serve --demo
 
+# ...persist everything across restarts (incidents, graph, budgets, baselines)
+go run ./cmd/semeion serve --state ./semeion-state.json
+
+# ...locked down: bearer-token auth, TLS, and a request rate cap
+go run ./cmd/semeion serve --auth-token "$TOKEN" --rate-limit 200 \
+  --tls-cert cert.pem --tls-key key.pem
+
 # production mode: poll a live source forever and alert on what it finds
 go run ./cmd/semeion watch --job job.json \
   --prom-url http://localhost:9090 --prom-query 'histogram_quantile(0.95, rate(http_latency_bucket[5m]))' \
@@ -158,7 +165,7 @@ still leads when there is one — it is the thing a human can revert.
 `Correlate` is stateless — call it twice on overlapping data and it returns two
 fresh sets with no memory that they describe the same ongoing event. The
 **tracker** closes that gap: it matches each freshly correlated incident to an
-open one by entity overlap (Jaccard ≥ 0.5), so a persistent incident is
+open one by entity overlap (overlap coefficient ≥ 0.5, stable as it spreads), so a persistent incident is
 
 - **opened once** and alerted once — not re-paged on every poll;
 - grown **in place** (its id is stable; new services can join without spawning a
@@ -299,12 +306,27 @@ budgets with their burn and severity). Endpoints:
 | `GET /v1/topology` | the dependency graph (nodes + edges) correlation reasons over |
 | `POST /v1/outliers` | a table of rows → population outlier scores + feature influence |
 | `POST /v1/autopilot` | points in → an inferred job + its results |
-| `POST /v1/forecast` | `{"series": [...], "horizon": N}` → forecast (uses the model plane if configured) |
+| `POST /v1/forecast` | `{"series": [...], "horizon": N}` → point forecast **+ 95% prediction bands** (uses the model plane if configured) |
 | `GET /v1/jobs` | analysed job names |
 | `GET /v1/results/{job}` | stored bucket results |
 | `GET /v1/grafana/{job}` | flat `time`/`score`/`detector`/`kind` rows for a Grafana table/time-series panel |
+| `GET /metrics` | semeion's **own** metrics in Prometheus format (live jobs, open incidents, per-SLO burn) — scrapeable by the same Prometheus it reads from |
 | `GET /healthz` | liveness |
 | `GET /` | Anomaly Explorer UI |
+
+With `serve --state FILE`, the full server state — the change log, dependency
+graph, tracked incidents (ids and all), named error budgets, and every live
+job's learned baseline — is snapshotted to a JSON file periodically and on
+`SIGTERM`, and restored on the next start. A restart resumes its incidents and
+keeps its models instead of re-warming; a missing or corrupt file just starts
+empty (it never blocks startup).
+
+**Hardening.** `serve` takes an optional bearer token (`--auth-token`, or
+`$SEMEION_AUTH_TOKEN`) required on every endpoint except `/healthz` and
+`/metrics`; TLS (`--tls-cert`/`--tls-key`); and a process-wide request rate cap
+(`--rate-limit`). Every request body is size-capped so an unauthenticated POST
+can't exhaust memory, per-series models are LRU-bounded so a high-cardinality
+field can't OOM the process, and webhook/Slack secrets are redacted from logs.
 
 ### Push instead of poll (OpenTelemetry)
 
@@ -396,6 +418,7 @@ Three layers, so the engine stays a clean library and Python is optional:
 | **A4 ✅** | **True multivariate** (relationship-break, Mahalanobis + χ²) + **contribution attribution**, **multi-bucket** (sustained-shift detection, median-robust), **renormalization** (rescale relative to the biggest anomaly), **zero-config autopilot** (infer a job from data), per-field metrics from `Values`. |
 | **A5 ✅** | **Ecosystem**: REST API (`serve`) + embedded **Anomaly Explorer** UI + **Grafana** endpoint, **Loki** + **ClickHouse** datafeeds, distroless **Dockerfile** + `docker compose`, **Helm chart** with an optional Python model-plane sidecar |
 | **A6 🚧** | **Alerting** (`alert`: Slack / webhook / Alertmanager sinks, score floor + bucket-time dedup) ✅ · **`watch`** continuous mode (poll → detect → alert → persist, resumable, SIGTERM-safe) ✅ · **live jobs + OTLP/HTTP ingestion** (push metrics *and* logs straight from an OTel Collector) ✅ · **population outlier detection** (4-method ensemble + feature influence, `outliers` CLI + API, optional pyod plane) ✅ · Kafka ingestion, gRPC API — pending |
+| **Hardening ✅** | Full post-audit pass: 8 correctness fixes (snapshot-all-models, robust flat-baseline, exponential dips, renormalization, cross-batch topology, change-precedence, model-memory LRU, out-of-order guard), statistical recalibration (multi-bucket, two-sided, change-point trend, AIC, seasonality detrend + calendar-phase), correlation/SLO fixes (confidence share, coarse-influencer guard, calendar training-exclusion, no-data SLO, MWMBR burn, incident-identity), production (auth/TLS/rate-limit/body-cap/secret-redaction/atomic-state), and parity additions (`distinct_count`/`non_zero_count`/`varp`, forecast bands, influence scores). See CHANGELOG. |
 
 ### Intelligence platform (consumes the engine)
 
@@ -403,7 +426,7 @@ Three layers, so the engine stays a clean library and Python is optional:
 |-------|------|
 | **B1 ✅** | **Correlation engine**: symptom flattening (influencers → entities), single-link grouping (shared entity / cross-signal co-occurrence), **change intelligence** (`/v1/changes` — deploys from CI), weighted root-cause ranking with per-candidate reasons; `GET /v1/incidents`, `POST /v1/correlate` |
 | **B2 ✅** | **Dependency graph / topology from traces** (`topology` — built from OTLP spans, `/v1/otlp/v1/traces` + `/v1/topology`) → *topological* correlation: a call path links a cascade across the whole window, and the upstream service outranks the coincident one · **incident lifecycle** (`correlate.Tracker` — overlap-matched identity, open once / grow in place / escalate on band crossing / resolve when quiet) with **lifecycle alerting** through the existing sinks |
-| **B3 ✅** | **Explanation + recommended fix** (`explain` — deterministic brief with evidence-cited actions, `/v1/explain/{id}`; ships a grounded LLM prompt but no model client — summarises, never detects) · **SLO / error-budget forecasting** (`slo` — SRE multi-window multi-burn-rate, `/v1/slo`, exhaustion ETA) |
+| **B3 ✅** | **Explanation + recommended fix** (`explain` — deterministic brief with evidence-cited actions, `/v1/explain/{id}`; ships a grounded LLM prompt but no model client — summarises, never detects) · **SLO / error-budget forecasting** (`slo` — SRE multi-window multi-burn-rate, named budgets `/v1/slo/{name}`, exhaustion ETA) · **4-tab Explorer** (Anomalies / Incidents / Topology / SLO) · **server state persistence** (`serve --state` — snapshot & restore incidents, graph, budgets, live-job baselines) |
 
 ## License
 

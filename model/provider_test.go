@@ -80,3 +80,71 @@ func TestForecastContinuesSeason(t *testing.T) {
 		}
 	}
 }
+
+// P1c regression: a pure linear ramp has NO level shifts — it must not be
+// reported as a staircase of spurious change points (measured: 7 fake CPs).
+func TestChangePointsTrendHasNone(t *testing.T) {
+	x := make([]float64, 200)
+	for i := range x {
+		x[i] = float64(i) // pure ramp 0..199
+	}
+	if cps := NewGoProvider().ChangePoints(x); len(cps) != 0 {
+		t.Fatalf("a pure ramp must yield no change points, got %v", cps)
+	}
+}
+
+// A step superimposed on a trend is still found.
+func TestChangePointsStepOnTrend(t *testing.T) {
+	x := make([]float64, 80)
+	for i := range x {
+		x[i] = float64(i) // trend
+		if i >= 40 {
+			x[i] += 100 // plus a level jump at 40
+		}
+	}
+	cps := NewGoProvider().ChangePoints(x)
+	if len(cps) == 0 {
+		t.Fatal("a step on a trend should still be detected")
+	}
+	if cps[0] < 35 || cps[0] > 45 {
+		t.Fatalf("change point near 40 expected, got %d", cps[0])
+	}
+}
+
+// P1f regression: a seasonal signal riding on a trend must still be detected —
+// the raw ACF is masked by the trend, so detection detrends first.
+func TestDetectSeasonalityUnderTrend(t *testing.T) {
+	period := 24
+	x := make([]float64, 240)
+	for i := range x {
+		x[i] = 100 + 30*sineAt(i, period) + 2*float64(i) // sine + strong upward trend
+	}
+	got := NewGoProvider().DetectSeasonality(x)
+	if len(got) == 0 {
+		t.Fatal("seasonality under a trend must still be detected")
+	}
+	if got[0] < period-2 || got[0] > period+2 {
+		t.Fatalf("expected period ~%d, got %d", period, got[0])
+	}
+}
+
+func sineAt(i, period int) float64 { return math.Sin(2 * math.Pi * float64(i) / float64(period)) }
+
+// Parity: forecast bands bracket the point forecast and widen with the horizon.
+func TestForecastBands(t *testing.T) {
+	x := sineSeries(120, 12)
+	bands := NewGoProvider().ForecastBands(x, 6)
+	if len(bands) != 6 {
+		t.Fatalf("expected 6 bands, got %d", len(bands))
+	}
+	for _, b := range bands {
+		if b.Lower > b.Point || b.Point > b.Upper {
+			t.Fatalf("band must bracket the point: %+v", b)
+		}
+	}
+	w0 := bands[0].Upper - bands[0].Lower
+	wN := bands[5].Upper - bands[5].Lower
+	if wN < w0 {
+		t.Errorf("interval should widen with horizon: first=%.2f last=%.2f", w0, wN)
+	}
+}

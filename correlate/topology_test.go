@@ -131,3 +131,24 @@ func TestCustomEntityKey(t *testing.T) {
 		t.Fatalf("service.name should be recognised by default, got %d incidents", len(inc))
 	}
 }
+
+// P1-L2 regression: a coarse influencer shared by every symptom (env=prod) must
+// NOT collapse unrelated symptoms into one mega-incident.
+func TestCoarseInfluencerDoesNotMergeEverything(t *testing.T) {
+	var syms []Symptom
+	// 8 unrelated hosts, each its own symptom, all tagged env=prod, spread out
+	// beyond the co-occurrence window so only a shared entity could link them.
+	for i := 0; i < 8; i++ {
+		syms = append(syms, Symptom{
+			Job: "cpu", Time: t0.Add(time.Duration(i) * 20 * time.Minute), Score: 80,
+			Entities: map[string]string{
+				"host": string(rune('a' + i)), // distinct identity
+				"env":  "prod",                // coarse attribute shared by all
+			},
+		})
+	}
+	inc := Correlate(syms, nil, Options{Window: time.Hour})
+	if len(inc) < 8 {
+		t.Fatalf("coarse env=prod must not merge 8 unrelated host incidents, got %d incidents", len(inc))
+	}
+}

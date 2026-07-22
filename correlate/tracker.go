@@ -60,8 +60,8 @@ type Tracker struct {
 	// ResolveAfter closes an incident once no fresh symptom has arrived for this
 	// long, measured against Now (default 15m).
 	ResolveAfter time.Duration
-	// MatchOverlap is the minimum entity Jaccard overlap to treat a fresh
-	// incident as the continuation of an open one (default 0.5).
+	// MatchOverlap is the minimum entity overlap coefficient (|∩|/min) to treat a
+	// fresh incident as the continuation of an open one (default 0.5).
 	MatchOverlap float64
 	// MaxResolved bounds the retained resolved history (default 500).
 	MaxResolved int
@@ -196,7 +196,7 @@ func (t *Tracker) bestMatch(f Incident, used map[string]bool) (string, float64) 
 		if used[key] {
 			continue
 		}
-		if j := jaccard(fe, entitySet(o.Incident)); j >= best {
+		if j := overlapCoefficient(fe, entitySet(o.Incident)); j >= best {
 			// >= so the threshold itself counts; ties broken by key for determinism.
 			if j > best || key < bestKey || bestKey == "" {
 				best, bestKey = j, key
@@ -232,6 +232,45 @@ func (t *Tracker) Resolved() []Tracked {
 	return out
 }
 
+// TrackerSnapshot is a serializable copy of a tracker's state.
+type TrackerSnapshot struct {
+	Open     []Tracked `json:"open"`
+	Resolved []Tracked `json:"resolved"`
+	Seq      int       `json:"seq"`
+}
+
+// Snapshot returns the tracker's state for persistence.
+func (t *Tracker) Snapshot() TrackerSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := TrackerSnapshot{Seq: t.seq, Open: make([]Tracked, 0, len(t.open))}
+	for _, o := range t.open {
+		s.Open = append(s.Open, *o)
+	}
+	for _, r := range t.resolved {
+		s.Resolved = append(s.Resolved, *r)
+	}
+	return s
+}
+
+// Restore replaces the tracker's state from a snapshot. Open incidents are
+// re-keyed by their stored id so Reconcile continues to match them.
+func (t *Tracker) Restore(s TrackerSnapshot) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seq = s.Seq
+	t.open = make(map[string]*Tracked, len(s.Open))
+	for i := range s.Open {
+		o := s.Open[i]
+		t.open[o.ID] = &o
+	}
+	t.resolved = make([]*Tracked, 0, len(s.Resolved))
+	for i := range s.Resolved {
+		r := s.Resolved[i]
+		t.resolved = append(t.resolved, &r)
+	}
+}
+
 func (t *Tracker) trimResolved() {
 	max := t.MaxResolved
 	if max <= 0 {
@@ -258,7 +297,14 @@ func entitySet(inc Incident) map[string]bool {
 	return set
 }
 
-func jaccard(a, b map[string]bool) float64 {
+// overlapCoefficient = |a ∩ b| / min(|a|,|b|). Unlike Jaccard, it stays high as
+// an incident SPREADS: when {web-1,web-2} becomes {web-2,web-3,web-4} their
+// Jaccard is only 0.25 (they'd be treated as two incidents — one spuriously
+// resolved, a fresh one paged), but the overlap coefficient is 0.5 because the
+// shared web-2 is half of the smaller set. That keeps one spreading outage a
+// single, stable incident. (Coarse attributes can't inflate this — they are
+// stripped from grouping upstream, so incident entity sets are identities.)
+func overlapCoefficient(a, b map[string]bool) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
@@ -268,11 +314,11 @@ func jaccard(a, b map[string]bool) float64 {
 			inter++
 		}
 	}
-	union := len(a) + len(b) - inter
-	if union == 0 {
-		return 0
+	min := len(a)
+	if len(b) < min {
+		min = len(b)
 	}
-	return float64(inter) / float64(union)
+	return float64(inter) / float64(min)
 }
 
 // severityBand buckets a score the way an on-call reads it, so escalation fires
