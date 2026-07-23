@@ -167,6 +167,23 @@ func (d Detector) CountsEmptyAsZero() bool {
 	return false
 }
 
+// CountFamilySplit reports a count-family detector split by a by/partition field:
+// each distinct split value is zero-filled when it produces no events in a bucket
+// (a per-partition drop to zero is a real signal), matching Elastic ML.
+func (d Detector) CountFamilySplit() bool {
+	if d.OverField != "" || d.IsMultivariate() {
+		return false
+	}
+	if d.ByField == "" && d.PartitionField == "" {
+		return false
+	}
+	switch d.Function {
+	case FuncCount, FuncNonZeroCount, FuncDistinctCount:
+		return true
+	}
+	return false
+}
+
 func (d Detector) EffectiveSide() Side {
 	if d.Side == "" {
 		return SideBoth

@@ -61,15 +61,19 @@ type Engine struct {
 	seriesScores map[string][]float64
 	lastSeen     map[string]time.Time
 	feedback     map[string]int
+	countSeries  map[string]map[string]bool
 	curBucket    time.Time
 	lruTick      int64
 	MaxSeries    int
 	Evicted      int64
 
-	LateDropped int64
+	LateDropped  int64
+	LateAccepted int64
 
 	GapsFilled  int64
 	GapsSkipped int64
+
+	Grace time.Duration
 }
 
 const maxGapFill = 1_000_000
@@ -284,6 +288,9 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		if _, ok := bySeries[""]; !ok {
 			bySeries[""] = nil
 		}
+	}
+	if d.CountFamilySplit() {
+		e.zeroFillKnown(d, bySeries)
 	}
 	for sk, sp := range bySeries {
 		var val float64
@@ -784,9 +791,32 @@ func (e *Engine) adaptiveAdmit(mk string, score float64) bool {
 	return score >= stats.Quantile(buf, e.job.Sensitivity)
 }
 
+const countSeriesCap = 50000
+
+func (e *Engine) zeroFillKnown(d jobspec.Detector, bySeries map[string][]core.DataPoint) {
+	if e.countSeries == nil {
+		e.countSeries = map[string]map[string]bool{}
+	}
+	ks := e.countSeries[d.ID()]
+	if ks == nil {
+		ks = map[string]bool{}
+		e.countSeries[d.ID()] = ks
+	}
+	for sk := range bySeries {
+		if len(ks) < countSeriesCap {
+			ks[sk] = true
+		}
+	}
+	for sk := range ks {
+		if _, ok := bySeries[sk]; !ok {
+			bySeries[sk] = nil
+		}
+	}
+}
+
 func (e *Engine) gapFillActive() bool {
 	for _, d := range e.job.Detectors {
-		if d.CountsEmptyAsZero() {
+		if d.CountsEmptyAsZero() || d.CountFamilySplit() {
 			return true
 		}
 	}
@@ -1139,10 +1169,13 @@ func (e *Engine) Push(p core.DataPoint) []core.BucketResult {
 		e.LateDropped++
 		return nil
 	}
+	if bt.Before(e.watermark) {
+		e.LateAccepted++
+	}
 	var out []core.BucketResult
 	if bt.After(e.watermark) {
-		out = e.closeBefore(bt)
 		e.watermark = bt
+		out = e.closeBefore(e.watermark.Add(-e.Grace))
 	}
 	e.pending[bt] = append(e.pending[bt], p)
 	return out
