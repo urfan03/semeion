@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/urfan03/semeion/core"
@@ -19,13 +20,15 @@ type ESMetric struct {
 }
 
 type ESSource struct {
-	BaseURL   string
-	Index     string
-	TimeField string
-	Metric    ESMetric
-	HTTP      *http.Client
-	Username  string
-	Password  string
+	BaseURL    string
+	Index      string
+	TimeField  string
+	Metric     ESMetric
+	SplitField string
+	TermsSize  int
+	HTTP       *http.Client
+	Username   string
+	Password   string
 }
 
 func NewESSource(baseURL, index, timeField string, m ESMetric) *ESSource {
@@ -39,22 +42,40 @@ func esAgg(fn string) string {
 	return fn
 }
 
+const maxESChunkBuckets = 5000
+
+func (s *ESSource) termsSize() int {
+	if s.TermsSize > 0 {
+		return s.TermsSize
+	}
+	return 1000
+}
+
 func (s *ESSource) buildBody(start, end time.Time, step time.Duration) ([]byte, error) {
 	agg := esAgg(s.Metric.Func)
+	if agg != "count" && s.Metric.Field == "" {
+		return nil, fmt.Errorf("elasticsearch: metric %q needs a field", s.Metric.Func)
+	}
+	metricAgg := map[string]any{"metric": map[string]any{agg: map[string]any{"field": s.Metric.Field}}}
+
 	series := map[string]any{
 		"date_histogram": map[string]any{
 			"field":          s.TimeField,
 			"fixed_interval": strconv.FormatInt(step.Milliseconds(), 10) + "ms",
 		},
 	}
-	if agg != "count" {
-		if s.Metric.Field == "" {
-			return nil, fmt.Errorf("elasticsearch: metric %q needs a field", s.Metric.Func)
+	if s.SplitField != "" {
+		split := map[string]any{
+			"terms": map[string]any{"field": s.SplitField, "size": s.termsSize()},
 		}
-		series["aggs"] = map[string]any{
-			"metric": map[string]any{agg: map[string]any{"field": s.Metric.Field}},
+		if agg != "count" {
+			split["aggs"] = metricAgg
 		}
+		series["aggs"] = map[string]any{"split": split}
+	} else if agg != "count" {
+		series["aggs"] = metricAgg
 	}
+
 	body := map[string]any{
 		"size": 0,
 		"query": map[string]any{
@@ -72,6 +93,26 @@ func (s *ESSource) buildBody(start, end time.Time, step time.Duration) ([]byte, 
 }
 
 func (s *ESSource) Fetch(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
+	if step <= 0 || !end.After(start) {
+		return s.fetchWindow(ctx, start, end, step)
+	}
+	chunk := step * maxESChunkBuckets
+	var out []core.DataPoint
+	for cur := start; cur.Before(end); cur = cur.Add(chunk) {
+		ce := cur.Add(chunk)
+		if ce.After(end) {
+			ce = end
+		}
+		pts, err := s.fetchWindow(ctx, cur, ce, step)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pts...)
+	}
+	return out, nil
+}
+
+func (s *ESSource) fetchWindow(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
 	body, err := s.buildBody(start, end, step)
 	if err != nil {
 		return nil, err
@@ -97,20 +138,31 @@ func (s *ESSource) Fetch(ctx context.Context, start, end time.Time, step time.Du
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("elasticsearch HTTP %d: %s", resp.StatusCode, string(raw))
 	}
-	return parseESAgg(raw, esAgg(s.Metric.Func) == "count")
+	return parseESAgg(raw, esAgg(s.Metric.Func) == "count", s.SplitField)
 }
 
-func parseESAgg(body []byte, isCount bool) ([]core.DataPoint, error) {
+type esMetricVal struct {
+	Value *float64 `json:"value"`
+}
+
+type esTermBucket struct {
+	Key      json.RawMessage `json:"key"`
+	DocCount int64           `json:"doc_count"`
+	Metric   *esMetricVal    `json:"metric"`
+}
+
+func parseESAgg(body []byte, isCount bool, splitField string) ([]core.DataPoint, error) {
 	var r struct {
 		Error        json.RawMessage `json:"error"`
 		Aggregations struct {
 			Series struct {
 				Buckets []struct {
-					Key      int64 `json:"key"`
-					DocCount int64 `json:"doc_count"`
-					Metric   *struct {
-						Value *float64 `json:"value"`
-					} `json:"metric"`
+					Key      int64        `json:"key"`
+					DocCount int64        `json:"doc_count"`
+					Metric   *esMetricVal `json:"metric"`
+					Split    *struct {
+						Buckets []esTermBucket `json:"buckets"`
+					} `json:"split"`
 				} `json:"buckets"`
 			} `json:"series"`
 		} `json:"aggregations"`
@@ -123,16 +175,47 @@ func parseESAgg(body []byte, isCount bool) ([]core.DataPoint, error) {
 	}
 	var out []core.DataPoint
 	for _, b := range r.Aggregations.Series.Buckets {
-		var v float64
-		if isCount {
-			v = float64(b.DocCount)
-		} else {
-			if b.Metric == nil || b.Metric.Value == nil {
+		ts := time.UnixMilli(b.Key).UTC()
+		if splitField != "" {
+			if b.Split == nil {
 				continue
 			}
-			v = *b.Metric.Value
+			for _, tb := range b.Split.Buckets {
+				v, ok := valueOfBucket(isCount, tb.DocCount, tb.Metric)
+				if !ok {
+					continue
+				}
+				out = append(out, core.DataPoint{Time: ts, Value: v,
+					Fields: map[string]string{splitField: termKey(tb.Key)}})
+			}
+			continue
 		}
-		out = append(out, core.DataPoint{Time: time.UnixMilli(b.Key).UTC(), Value: v})
+		v, ok := valueOfBucket(isCount, b.DocCount, b.Metric)
+		if !ok {
+			continue
+		}
+		out = append(out, core.DataPoint{Time: ts, Value: v})
 	}
 	return out, nil
+}
+
+func valueOfBucket(isCount bool, docCount int64, m *esMetricVal) (float64, bool) {
+	if isCount {
+		return float64(docCount), true
+	}
+	if m == nil || m.Value == nil {
+		return 0, false
+	}
+	return *m.Value, true
+}
+
+func termKey(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		var str string
+		if json.Unmarshal(raw, &str) == nil {
+			return str
+		}
+	}
+	return s
 }

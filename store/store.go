@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/urfan03/semeion/engine"
 )
@@ -150,4 +151,32 @@ func (s *FileStore) pruneVersions(name string) {
 	for _, v := range versions[:len(versions)-maxVersions] {
 		_ = os.Remove(filepath.Join(s.versionsDir(name), v+".json"))
 	}
+}
+
+func (s *FileStore) RetainVersions(name string, maxAge time.Duration) (removed int, err error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+	versions, err := s.ListVersions(name)
+	if err != nil {
+		return 0, err
+	}
+	dir := s.versionsDir(name)
+	cutoff := time.Now().Add(-maxAge)
+	for i, v := range versions {
+		if i == len(versions)-1 {
+			break
+		}
+		p := filepath.Join(dir, v+".json")
+		fi, statErr := os.Stat(p)
+		if statErr != nil {
+			continue
+		}
+		if fi.ModTime().Before(cutoff) {
+			if os.Remove(p) == nil {
+				removed++
+			}
+		}
+	}
+	return removed, nil
 }

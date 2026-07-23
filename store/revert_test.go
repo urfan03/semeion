@@ -1,6 +1,8 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -59,5 +61,34 @@ func TestSnapshotVersionPruning(t *testing.T) {
 	versions, _ := s.ListVersions("j")
 	if len(versions) != maxVersions {
 		t.Fatalf("expected pruning to keep %d versions, got %d", maxVersions, len(versions))
+	}
+}
+
+func TestRetainVersionsByAge(t *testing.T) {
+	dir := t.TempDir()
+	s := NewFileStore(dir)
+	for i := 0; i < 4; i++ {
+		if _, err := s.SaveVersion("j", engine.Snapshot{JobName: "j", Threshold: float64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	versions, _ := s.ListVersions("j")
+	vdir := filepath.Join(dir, "j.versions")
+	old := time.Now().Add(-48 * time.Hour)
+	for _, v := range versions[:2] {
+		if err := os.Chtimes(filepath.Join(vdir, v+".json"), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := s.RetainVersions("j", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected 2 old versions pruned, got %d", removed)
+	}
+	left, _ := s.ListVersions("j")
+	if len(left) != 2 {
+		t.Fatalf("expected 2 versions retained, got %d", len(left))
 	}
 }
