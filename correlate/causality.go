@@ -28,14 +28,17 @@ func OrderByCausality(target []float64, candidates map[string][]float64, maxLag,
 		})
 	}
 
-	sort.Slice(ranks, func(i, j int) bool {
+	sort.SliceStable(ranks, func(i, j int) bool {
 		if ranks[i].Leads != ranks[j].Leads {
 			return ranks[i].Leads
 		}
 		if ranks[i].Improvement != ranks[j].Improvement {
 			return ranks[i].Improvement > ranks[j].Improvement
 		}
-		return absF(ranks[i].Corr) > absF(ranks[j].Corr)
+		if absF(ranks[i].Corr) != absF(ranks[j].Corr) {
+			return absF(ranks[i].Corr) > absF(ranks[j].Corr)
+		}
+		return ranks[i].Label < ranks[j].Label
 	})
 	return ranks
 }

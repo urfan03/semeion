@@ -63,3 +63,19 @@ func TestHoltWintersBeatsSeasonalNaive(t *testing.T) {
 		t.Fatalf("Holt-Winters (%.2f) should be at least as accurate as seasonal-naive (%.2f) on a trending seasonal series", mae(hw), mae(naive))
 	}
 }
+
+func TestForecastBandsWidenWithHorizon(t *testing.T) {
+	x := make([]float64, 100)
+	for i := range x {
+		x[i] = 100 + 5*math.Sin(float64(i)*0.3)
+	}
+	bands := NewGoProvider().ForecastBands(x, 20)
+	w0 := bands[0].Upper - bands[0].Lower
+	wN := bands[19].Upper - bands[19].Lower
+	if w0 <= 0 {
+		t.Fatalf("band should have positive width, got %v", w0)
+	}
+	if wN <= w0*2 {
+		t.Fatalf("multi-step band must widen with horizon (~sqrt(h)); w0=%.3f w19=%.3f", w0, wN)
+	}
+}

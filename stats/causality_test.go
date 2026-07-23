@@ -54,3 +54,29 @@ func TestGrangerDirection(t *testing.T) {
 		t.Fatalf("a→b Granger improvement should be substantial, got %.3f", abImprove)
 	}
 }
+
+func TestGrangerStableOnLargeCollinear(t *testing.T) {
+	n := 200
+	a := make([]float64, n)
+	b := make([]float64, n)
+	seed := uint64(99)
+	next := func() float64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return float64(seed%2000)/1000 - 1
+	}
+	acc := 1e6
+	for i := 0; i < n; i++ {
+		acc += next()
+		a[i] = acc
+		b[i] = a[i]*1.0000001 + 1e-3*next()
+	}
+	imp, f := Granger(a, b, 3)
+	if math.IsNaN(imp) || math.IsInf(imp, 0) || imp < 0 || imp > 1.0001 {
+		t.Fatalf("Granger improvement must stay finite in [0,1] on large collinear input, got %v", imp)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		t.Fatalf("Granger F must be finite and non-negative, got %v", f)
+	}
+}

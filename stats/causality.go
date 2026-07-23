@@ -137,6 +137,14 @@ func olsSSE(X [][]float64, y []float64) float64 {
 			}
 		}
 	}
+	var tr float64
+	for i := 0; i < p; i++ {
+		tr += xtx[i][i]
+	}
+	ridge := 1e-8*tr/float64(p) + 1e-12
+	for i := 0; i < p; i++ {
+		xtx[i][i] += ridge
+	}
 	beta, ok := solve(xtx, xty)
 	if !ok {
 		my := meanOf(y)
@@ -160,6 +168,15 @@ func olsSSE(X [][]float64, y []float64) float64 {
 
 func solve(A [][]float64, b []float64) ([]float64, bool) {
 	n := len(b)
+	scale := 0.0
+	for i := 0; i < n; i++ {
+		if v := math.Abs(A[i][i]); v > scale {
+			scale = v
+		}
+	}
+	if scale == 0 {
+		scale = 1
+	}
 	m := make([][]float64, n)
 	for i := range m {
 		m[i] = append(append([]float64(nil), A[i]...), b[i])
@@ -171,7 +188,7 @@ func solve(A [][]float64, b []float64) ([]float64, bool) {
 				piv = r
 			}
 		}
-		if math.Abs(m[piv][col]) < 1e-12 {
+		if math.Abs(m[piv][col]) < 1e-12*scale {
 			return nil, false
 		}
 		m[col], m[piv] = m[piv], m[col]

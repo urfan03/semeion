@@ -65,16 +65,30 @@ func detectSeasonality(raw []float64) []int {
 		acf[lag] = num / den
 	}
 
-	var peaks []int
+	type peak struct {
+		lag int
+		acf float64
+	}
+	var peaks []peak
 	for lag := 2; lag < maxLag; lag++ {
 		if acf[lag] >= 0.3 && acf[lag] > acf[lag-1] && acf[lag] >= acf[lag+1] {
-			peaks = append(peaks, lag)
-			if len(peaks) >= 6 {
-				break
-			}
+			peaks = append(peaks, peak{lag, acf[lag]})
 		}
 	}
-	return peaks
+	sort.SliceStable(peaks, func(i, j int) bool {
+		if peaks[i].acf != peaks[j].acf {
+			return peaks[i].acf > peaks[j].acf
+		}
+		return peaks[i].lag < peaks[j].lag
+	})
+	out := make([]int, 0, 6)
+	for i, p := range peaks {
+		if i >= 6 {
+			break
+		}
+		out = append(out, p.lag)
+	}
+	return out
 }
 
 func decompose(x []float64, period int) Decomposition {
@@ -225,8 +239,7 @@ func forecastBands(x []float64, horizon int) []Band {
 	sd := residualStd(x)
 	const z = 1.96
 	for h := range pts {
-
-		w := z * sd * math.Sqrt(1+float64(h)/math.Max(1, float64(len(x))))
+		w := z * sd * math.Sqrt(float64(h+1))
 		bands[h] = Band{Point: pts[h], Lower: pts[h] - w, Upper: pts[h] + w}
 	}
 	return bands

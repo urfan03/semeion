@@ -35,7 +35,12 @@ func (t *rareTracker) evictCommon(keep int) {
 	for v, n := range t.seen {
 		all = append(all, kv{v, n})
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].n > all[j].n })
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].n != all[j].n {
+			return all[i].n > all[j].n
+		}
+		return all[i].v < all[j].v
+	})
 	for _, e := range all[:len(all)-keep] {
 		delete(t.seen, e.v)
 	}
@@ -714,9 +719,14 @@ func shannonEntropy(pts []core.DataPoint, field string) float64 {
 	if total == 0 {
 		return 0
 	}
+	keys := make([]string, 0, len(counts))
+	for v := range counts {
+		keys = append(keys, v)
+	}
+	sort.Strings(keys)
 	var h float64
-	for _, c := range counts {
-		p := float64(c) / float64(total)
+	for _, v := range keys {
+		p := float64(counts[v]) / float64(total)
 		h -= p * math.Log2(p)
 	}
 	return h

@@ -104,10 +104,13 @@ func covMatrix(rows [][]float64, mean []float64) [][]float64 {
 			}
 		}
 	}
-	n := float64(len(rows))
+	denom := float64(len(rows) - 1)
+	if denom < 1 {
+		denom = 1
+	}
 	for i := 0; i < k; i++ {
 		for j := 0; j < k; j++ {
-			cov[i][j] /= n
+			cov[i][j] /= denom
 		}
 	}
 	return cov
