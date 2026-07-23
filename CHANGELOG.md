@@ -39,6 +39,49 @@ tests; all 21 packages green.
 - **Memory-bound test**: under 6000-series cardinality with `MaxSeries=500`,
   resident models stay bounded and eviction fires (no table leaks).
 
+## [0.7.0]
+
+A deep algorithmic-correctness audit of the core math, then every genuine finding
+fixed with a regression test. All packages green.
+
+### Correctness bugs fixed (were wrong on the live path)
+- **Exponential distribution tail was two-sided**, so a value at the mode (x≈0 —
+  the *most* typical for a right-skewed metric) scored 100. Now side-aware:
+  upper-tail by default, lower-tail only when `SideLow` (outage) is requested.
+- **`poissonCDF` looped O(k)** with no early exit — a single large count on a
+  Poisson-fit series could stall the engine for millions of iterations. Now
+  converges-and-breaks, with a normal approximation for large k.
+- **One-sided distribution detectors** emitted a two-sided p (½ the sensitivity
+  of the metric detector). Now one-tail.
+
+### Statistical soundness
+- **AIC family selection** compared a discrete PMF (Poisson) against continuous
+  densities; for integer data the continuous candidates are now discretized
+  (bin-integrated) so the comparison is measure-consistent.
+- **`rare`/`freq_rare`** now emit a genuine empirical-frequency probability, so
+  fusion and renormalization see an honest p (the display score keeps its useful
+  scale).
+- **Ensemble** combines detectors with **Fisher's method** (χ² on −2·Σln p), not
+  a raw product of p-values (which grew with detector count regardless of
+  evidence).
+- **Granger** OLS is regularized (ridge) with a scale-relative pivot — no more
+  garbage from collinear / large-magnitude series.
+- **Forecast bands** widen ∝ √h (were nearly flat), so multi-step breach
+  probabilities aren't over-confident.
+- **Seasonality** picks the period by ACF magnitude, not smallest lag.
+- **Covariance** uses the n−1 estimator.
+
+### Determinism
+- `shannonEntropy` sums in sorted-key order; `evictCommon` and
+  `OrderByCausality` got stable tiebreaks — no map-order leaking into a value or
+  ordering.
+
+### Elastic-ML parity
+- **`initial_score`** preserved on records and buckets across renormalization
+  (Elastic's initial_record_score / initial_anomaly_score).
+- **Model-memory byte estimate + `model_memory_status`** (ok/soft_limit/
+  hard_limit), surfaced in live job status; optional `ModelMemoryLimit`.
+
 ## [0.6.0]
 
 Elastic-ML parity + precision hardening, driven by an honest gap audit. Each item
