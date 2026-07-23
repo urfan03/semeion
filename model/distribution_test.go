@@ -8,25 +8,32 @@ func TestFitNormalAndTail(t *testing.T) {
 	if d.Family != "normal" {
 		t.Fatalf("family: got %q, want normal", d.Family)
 	}
-	if p := d.Tail(d.Params[0]); p < 0.5 {
+	if p := d.Tail(d.Params[0], "both"); p < 0.5 {
 		t.Fatalf("tail at mean should be high, got %.3f", p)
 	}
 	far := d.Params[0] + 8*d.Params[1]
-	if p := d.Tail(far); p > 0.01 {
+	if p := d.Tail(far, "both"); p > 0.01 {
 		t.Fatalf("tail far from mean should be tiny, got %.4f", p)
 	}
 }
 
-func TestExponentialTailTwoSided(t *testing.T) {
+func TestExponentialTailSideAware(t *testing.T) {
 	d := Distribution{Family: "exponential", Params: []float64{1}}
-	if p := d.Tail(0); p > 0.05 {
-		t.Fatalf("x=0 (an outage) must be extreme for a metric, got %.3f", p)
+	// The mode is at 0: by default (both) a near-zero value is the MOST typical,
+	// not anomalous — only large x is (upper tail).
+	if p := d.Tail(0, "both"); p < 0.5 {
+		t.Fatalf("x=0 is the exponential mode; must not be extreme under both, got %.3f", p)
 	}
-	if p := d.Tail(1); p < 0.5 {
-		t.Fatalf("x at the mean should not be extreme, got %.3f", p)
-	}
-	if p := d.Tail(10); p > 0.01 {
+	if p := d.Tail(10, "both"); p > 0.01 {
 		t.Fatalf("large x must be extreme, got %.4f", p)
+	}
+	// SideLow explicitly cares about drops → a throughput collapse to ~0 is
+	// extreme on the lower tail.
+	if p := d.Tail(0, "low"); p > 0.05 {
+		t.Fatalf("x=0 must be extreme when SideLow (outage), got %.3f", p)
+	}
+	if p := d.Tail(1, "high"); p < 0.3 {
+		t.Fatalf("x at the mean should not be extreme on the high side, got %.3f", p)
 	}
 }
 

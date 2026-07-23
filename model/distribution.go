@@ -8,45 +8,72 @@ type Distribution struct {
 	LogLik float64   `json:"loglik"`
 }
 
-func (d Distribution) Tail(x float64) float64 {
+func (d Distribution) Tail(x float64, side string) float64 {
+	if d.Family == "exponential" {
+		rate := d.Params[0]
+		if rate <= 0 || x < 0 {
+			return 1
+		}
+		surv := math.Exp(-rate * x)
+		if side == "low" {
+			return clampP(1 - surv)
+		}
+		return clampP(surv)
+	}
+	cdf, ok := d.cdf(x)
+	if !ok {
+		return 1
+	}
+	surv := 1 - cdf
 	var p float64
+	switch side {
+	case "high":
+		p = surv
+	case "low":
+		p = cdf
+	default:
+		p = 2 * math.Min(cdf, surv)
+	}
+	return clampP(p)
+}
+
+func (d Distribution) cdf(x float64) (float64, bool) {
 	switch d.Family {
 	case "normal":
 		mu, sd := d.Params[0], d.Params[1]
 		if sd <= 0 {
-			return 1
+			return 0, false
 		}
-		lower := 0.5 * math.Erfc(-(x-mu)/(sd*math.Sqrt2))
-		p = 2 * math.Min(lower, 1-lower)
+		return 0.5 * math.Erfc(-(x-mu)/(sd*math.Sqrt2)), true
 	case "lognormal":
 		mu, sd := d.Params[0], d.Params[1]
-		if x <= 0 || sd <= 0 {
-			return 1
+		if sd <= 0 {
+			return 0, false
 		}
-		lower := 0.5 * math.Erfc(-(math.Log(x)-mu)/(sd*math.Sqrt2))
-		p = 2 * math.Min(lower, 1-lower)
+		if x <= 0 {
+			return 0, true
+		}
+		return 0.5 * math.Erfc(-(math.Log(x)-mu)/(sd*math.Sqrt2)), true
 	case "exponential":
-
 		rate := d.Params[0]
 		if rate <= 0 {
-			return 1
+			return 0, false
 		}
 		if x < 0 {
-			return 1
+			return 0, true
 		}
-		upper := math.Exp(-rate * x)
-		lower := 1 - upper
-		p = 2 * math.Min(lower, upper)
+		return 1 - math.Exp(-rate*x), true
 	case "poisson":
 		lambda := d.Params[0]
 		if lambda <= 0 {
-			return 1
+			return 0, false
 		}
-		lower := poissonCDF(math.Floor(x), lambda)
-		p = 2 * math.Min(lower, 1-lower)
-	default:
-		return 1
+		return poissonCDF(math.Floor(x), lambda), true
 	}
+	return 0, false
+}
+
+func clampP(p float64) float64 {
 	if p <= 0 {
 		return 1e-300
 	}
@@ -74,14 +101,12 @@ func fitDistribution(x []float64) Distribution {
 		}
 	}
 
-	best := Distribution{Family: "normal", Params: []float64{mean, sd}, LogLik: normalLogLik(x, mean, sd)}
-	bestAIC := aic(2, best.LogLik)
-	consider := func(fam string, k int, params []float64, ll float64) {
-		if a := aic(k, ll); a < bestAIC {
-			best, bestAIC = Distribution{Family: fam, Params: params, LogLik: ll}, a
-		}
+	type cand struct {
+		fam    string
+		k      int
+		params []float64
 	}
-
+	cands := []cand{{"normal", 2, []float64{mean, sd}}}
 	if allPos {
 		var s, s2 float64
 		for _, v := range x {
@@ -92,17 +117,59 @@ func fitDistribution(x []float64) Distribution {
 		lm := s / float64(n)
 		lsd := math.Sqrt(math.Max(0, s2/float64(n)-lm*lm))
 		if lsd > 0 {
-			consider("lognormal", 2, []float64{lm, lsd}, lognormalLogLik(x, lm, lsd))
+			cands = append(cands, cand{"lognormal", 2, []float64{lm, lsd}})
 		}
 	}
 	if allNonNeg && mean > 0 {
-		rate := 1 / mean
-		consider("exponential", 1, []float64{rate}, exponentialLogLik(x, rate))
+		cands = append(cands, cand{"exponential", 1, []float64{1 / mean}})
+	}
+
+	logLikOf := func(c cand) float64 {
+		if allInt {
+			return discreteLogLik(Distribution{Family: c.fam, Params: c.params}, x)
+		}
+		switch c.fam {
+		case "lognormal":
+			return lognormalLogLik(x, c.params[0], c.params[1])
+		case "exponential":
+			return exponentialLogLik(x, c.params[0])
+		default:
+			return normalLogLik(x, c.params[0], c.params[1])
+		}
+	}
+
+	best := Distribution{Family: cands[0].fam, Params: cands[0].params, LogLik: logLikOf(cands[0])}
+	bestAIC := aic(cands[0].k, best.LogLik)
+	for _, c := range cands[1:] {
+		ll := logLikOf(c)
+		if a := aic(c.k, ll); a < bestAIC {
+			best, bestAIC = Distribution{Family: c.fam, Params: c.params, LogLik: ll}, a
+		}
 	}
 	if allNonNeg && allInt && mean > 0 {
-		consider("poisson", 1, []float64{mean}, poissonLogLik(x, mean))
+		ll := poissonLogLik(x, mean)
+		if a := aic(1, ll); a < bestAIC {
+			best, bestAIC = Distribution{Family: "poisson", Params: []float64{mean}, LogLik: ll}, a
+		}
 	}
 	return best
+}
+
+func discreteLogLik(d Distribution, x []float64) float64 {
+	var ll float64
+	for _, v := range x {
+		hi, ok1 := d.cdf(v + 0.5)
+		lo, ok2 := d.cdf(v - 0.5)
+		if !ok1 || !ok2 {
+			return math.Inf(-1)
+		}
+		pm := hi - lo
+		if pm < 1e-300 {
+			pm = 1e-300
+		}
+		ll += math.Log(pm)
+	}
+	return ll
 }
 
 func aic(k int, logLik float64) float64 {
@@ -168,7 +235,7 @@ func poissonCDF(k, lambda float64) float64 {
 	if k < 0 {
 		return 0
 	}
-	if lambda > 500 {
+	if lambda > 500 || k > 1000 {
 		return 0.5 * math.Erfc(-((k+0.5)-lambda)/(math.Sqrt(lambda)*math.Sqrt2))
 	}
 	var sum, term float64
@@ -177,6 +244,9 @@ func poissonCDF(k, lambda float64) float64 {
 	for i := 1.0; i <= k; i++ {
 		term *= lambda / i
 		sum += term
+		if i > lambda && term < sum*1e-15 {
+			break
+		}
 	}
 	if sum > 1 {
 		sum = 1

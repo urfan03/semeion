@@ -46,12 +46,7 @@ func (m *DistributionModel) Observe(value float64) (prob, score, typical float64
 		dir = core.DirDown
 	}
 
-	prob = m.dist.Tail(value)
-
-	if (m.side == jobspec.SideHigh && dir == core.DirDown) ||
-		(m.side == jobspec.SideLow && dir == core.DirUp) {
-		prob = 1
-	}
+	prob = m.dist.Tail(value, string(m.side))
 	score = scoreFromProbability(prob)
 	m.push(value)
 	return prob, score, typical, dir
