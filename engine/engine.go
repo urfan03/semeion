@@ -406,16 +406,32 @@ func valueRate(p core.DataPoint, field string) float64 {
 }
 
 func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
+	bySplit := make(map[string][]core.DataPoint)
+	for _, p := range pts {
+		if p.Fields[d.OverField] == "" {
+			continue
+		}
+		bySplit[seriesKey(d, p.Fields)] = append(bySplit[seriesKey(d, p.Fields)], p)
+	}
+	splits := make([]string, 0, len(bySplit))
+	for sk := range bySplit {
+		splits = append(splits, sk)
+	}
+	sort.Strings(splits)
+	for _, split := range splits {
+		e.scorePopulationSplit(br, d, bt, split, bySplit[split])
+	}
+}
+
+func (e *Engine) scorePopulationSplit(br *core.BucketResult, d jobspec.Detector, bt time.Time, split string, pts []core.DataPoint) {
 	byEntity := make(map[string][]core.DataPoint)
 	for _, p := range pts {
-		if ent := p.Fields[d.OverField]; ent != "" {
-			byEntity[ent] = append(byEntity[ent], p)
-		}
+		byEntity[p.Fields[d.OverField]] = append(byEntity[p.Fields[d.OverField]], p)
 	}
 	if len(byEntity) == 0 {
 		return
 	}
-	m := e.model(d.ID()+"|__pool__", d.EffectiveSide())
+	m := e.model(d.ID()+"|"+split+"|__pool__", d.EffectiveSide())
 
 	type ev struct {
 		entity              string
@@ -444,11 +460,24 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 	}
 	for _, x := range evs {
 		if x.score >= e.threshold {
+			infl := []core.Influencer{{Field: d.OverField, Value: x.entity}}
+			if p0 := byEntity[x.entity]; len(p0) > 0 {
+				if d.PartitionField != "" {
+					infl = append(infl, core.Influencer{Field: d.PartitionField, Value: p0[0].Fields[d.PartitionField]})
+				}
+				if d.ByField != "" {
+					infl = append(infl, core.Influencer{Field: d.ByField, Value: p0[0].Fields[d.ByField]})
+				}
+			}
+			series := x.entity
+			if split != "" {
+				series = split + ";" + d.OverField + "=" + x.entity
+			}
 			e.emit(br, d, core.Record{
-				Time: bt, Detector: d.ID(), Series: x.entity,
+				Time: bt, Detector: d.ID(), Series: series,
 				Actual: x.val, Typical: x.t, Lower: x.lower, Upper: x.upper, Probability: x.prob,
 				Score: x.score, Direction: x.dir, Kind: "population",
-				Influencers: []core.Influencer{{Field: d.OverField, Value: x.entity}},
+				Influencers: infl,
 			})
 		}
 	}
