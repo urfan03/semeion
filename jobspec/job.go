@@ -39,12 +39,13 @@ const (
 )
 
 type Detector struct {
-	Function       Function `json:"function"                  yaml:"function"`
-	Field          string   `json:"field,omitempty"           yaml:"field,omitempty"`
-	DenomField     string   `json:"denom_field,omitempty"     yaml:"denom_field,omitempty"`
-	Side           Side     `json:"side,omitempty"            yaml:"side,omitempty"`
-	ByField        string   `json:"by_field,omitempty"        yaml:"by_field,omitempty"`
-	PartitionField string   `json:"partition_field,omitempty" yaml:"partition_field,omitempty"`
+	Function          Function `json:"function"                  yaml:"function"`
+	Field             string   `json:"field,omitempty"           yaml:"field,omitempty"`
+	DenomField        string   `json:"denom_field,omitempty"     yaml:"denom_field,omitempty"`
+	SummaryCountField string   `json:"summary_count_field,omitempty" yaml:"summary_count_field,omitempty"`
+	Side              Side     `json:"side,omitempty"            yaml:"side,omitempty"`
+	ByField           string   `json:"by_field,omitempty"        yaml:"by_field,omitempty"`
+	PartitionField    string   `json:"partition_field,omitempty" yaml:"partition_field,omitempty"`
 
 	Fields []string `json:"fields,omitempty" yaml:"fields,omitempty"`
 
@@ -61,6 +62,52 @@ type Calendar struct {
 	Name  string    `json:"name,omitempty" yaml:"name,omitempty"`
 	Start time.Time `json:"start"          yaml:"start"`
 	End   time.Time `json:"end"            yaml:"end"`
+	// RecurWeekly makes this a recurring weekly event: only the weekday-of-week
+	// and time-of-day of [Start,End) are matched, on every week (a maintenance
+	// window every Sunday 02:00-03:00). RecurDaily matches the time-of-day every
+	// day. Both compare in UTC. When neither is set the window is one-shot.
+	RecurWeekly bool `json:"recur_weekly,omitempty" yaml:"recur_weekly,omitempty"`
+	RecurDaily  bool `json:"recur_daily,omitempty"  yaml:"recur_daily,omitempty"`
+}
+
+// Covers reports whether t falls inside this calendar window, honouring weekly or
+// daily recurrence.
+func (c Calendar) Covers(t time.Time) bool {
+	if c.End.Before(c.Start) || c.End.Equal(c.Start) {
+		return false
+	}
+	t = t.UTC()
+	switch {
+	case c.RecurDaily:
+		return coversDaily(c.Start.UTC(), c.End.UTC(), t)
+	case c.RecurWeekly:
+		return coversWeekly(c.Start.UTC(), c.End.UTC(), t)
+	default:
+		return !t.Before(c.Start) && t.Before(c.End)
+	}
+}
+
+func secondsOfDay(t time.Time) int { return t.Hour()*3600 + t.Minute()*60 + t.Second() }
+
+func coversDaily(start, end, t time.Time) bool {
+	s := secondsOfDay(start)
+	dur := int(end.Sub(start).Seconds())
+	if dur >= 86400 {
+		return true
+	}
+	off := (secondsOfDay(t) - s + 86400) % 86400
+	return off < dur
+}
+
+func coversWeekly(start, end, t time.Time) bool {
+	s := int(start.Weekday())*86400 + secondsOfDay(start)
+	dur := int(end.Sub(start).Seconds())
+	if dur >= 7*86400 {
+		return true
+	}
+	cur := int(t.Weekday())*86400 + secondsOfDay(t)
+	off := (cur - s + 7*86400) % (7 * 86400)
+	return off < dur
 }
 
 type Rule struct {
@@ -76,6 +123,11 @@ type Rule struct {
 	SkipWeekdaysUTC []int `json:"skip_weekdays_utc,omitempty" yaml:"skip_weekdays_utc,omitempty"`
 
 	SkipInfluencer map[string][]string `json:"skip_influencer,omitempty" yaml:"skip_influencer,omitempty"`
+	// SkipModelUpdate stops a matching bucket from being LEARNED into the baseline
+	// (Elastic ML's skip_model_update action) — the anomaly is still reported, but
+	// the outlier value doesn't pollute the model. Applies to the plain temporal
+	// path.
+	SkipModelUpdate bool `json:"skip_model_update,omitempty" yaml:"skip_model_update,omitempty"`
 }
 
 type Job struct {

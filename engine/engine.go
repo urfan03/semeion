@@ -17,7 +17,6 @@ const (
 	defaultThreshold = 50
 	rareWarmup       = 20
 	rareMaxBuckets   = 2
-	rareValueScore   = 70
 )
 
 type rareTracker struct {
@@ -213,7 +212,7 @@ func (e *Engine) scoreTemporalPeek(br *core.BucketResult, d jobspec.Detector, bt
 		if d.Function == jobspec.FuncRate {
 			val, ok = e.rateValue(d, sp)
 		} else {
-			val, ok = detect.Aggregate(d.Function, d.Field, sp)
+			val, ok = e.aggregate(d, sp)
 		}
 		if !ok {
 			continue
@@ -292,7 +291,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		if d.Function == jobspec.FuncRate {
 			val, ok = e.rateValue(d, sp)
 		} else {
-			val, ok = detect.Aggregate(d.Function, d.Field, sp)
+			val, ok = e.aggregate(d, sp)
 		}
 		if !ok {
 			continue
@@ -322,12 +321,16 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			lower, upper = sm.Bounds(boundsZ)
 		default:
 			mdl := e.model(mk, d.EffectiveSide())
-			prob, score, typical, dir = mdl.Observe(val)
-			if mdl.LastMulti() {
-				kind = "multi_bucket"
+			if skipLearn(d, val) {
+				prob, score, typical, dir = mdl.Score(val)
+			} else {
+				prob, score, typical, dir = mdl.Observe(val)
+				if mdl.LastMulti() {
+					kind = "multi_bucket"
+				}
+				mbImpact = mdl.MultiBucketImpact()
 			}
 			lower, upper = mdl.Bounds(boundsZ)
-			mbImpact = mdl.MultiBucketImpact()
 		}
 		admit := score >= e.threshold
 		if admit && e.job.Sensitivity > 0 {
@@ -342,6 +345,37 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			})
 		}
 	}
+}
+
+func skipLearn(d jobspec.Detector, val float64) bool {
+	for _, rule := range d.Rules {
+		if !rule.SkipModelUpdate {
+			continue
+		}
+		if rule.SkipActualAbove != nil && val > *rule.SkipActualAbove {
+			return true
+		}
+		if rule.SkipActualBelow != nil && val < *rule.SkipActualBelow {
+			return true
+		}
+		if rule.SkipActualAbove == nil && rule.SkipActualBelow == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) aggregate(d jobspec.Detector, pts []core.DataPoint) (float64, bool) {
+	if d.SummaryCountField != "" && d.Function == jobspec.FuncCount {
+		var s float64
+		for _, p := range pts {
+			if p.Values != nil {
+				s += p.Values[d.SummaryCountField]
+			}
+		}
+		return s, true
+	}
+	return detect.Aggregate(d.Function, d.Field, pts)
 }
 
 func (e *Engine) rateValue(d jobspec.Detector, pts []core.DataPoint) (float64, bool) {
@@ -397,7 +431,7 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 
 	evs := make([]ev, 0, len(ents))
 	for _, ent := range ents {
-		val, ok := detect.Aggregate(d.Function, d.Field, byEntity[ent])
+		val, ok := e.aggregate(d, byEntity[ent])
 		if !ok {
 			continue
 		}
@@ -654,10 +688,6 @@ func shannonEntropy(pts []core.DataPoint, field string) float64 {
 
 func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
 	freq := d.Function == jobspec.FuncFreqRare
-
-	if !freq && rareValueScore < e.threshold {
-		return
-	}
 	tr := e.rare[d.ID()]
 	if tr == nil {
 		tr = &rareTracker{seen: make(map[string]int)}
@@ -685,11 +715,16 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 			continue
 		}
 		if tr.seen[v] <= rareMaxBuckets {
-			score, kind := float64(rareValueScore), "rare"
+			freqAcross := float64(tr.seen[v]) / float64(tr.buckets)
+			severity := -math.Log10(freqAcross)
+			score := 50 + 15*severity
+			kind := "rare"
 			if freq {
-
-				score = math.Min(100, rareValueScore+10*math.Log2(float64(present[v]+1)))
+				score += 10 * math.Log2(float64(present[v]+1))
 				kind = "freq_rare"
+			}
+			if score > 100 {
+				score = 100
 			}
 			if score < e.threshold {
 				continue
@@ -981,7 +1016,7 @@ func probFromScore(score float64) float64 {
 
 func (e *Engine) inCalendar(bt time.Time) bool {
 	for _, c := range e.job.Calendars {
-		if !bt.Before(c.Start) && bt.Before(c.End) {
+		if c.Covers(bt) {
 			return true
 		}
 	}
@@ -990,11 +1025,14 @@ func (e *Engine) inCalendar(bt time.Time) bool {
 
 func (e *Engine) suppressed(d jobspec.Detector, r core.Record) bool {
 	for _, c := range e.job.Calendars {
-		if !r.Time.Before(c.Start) && r.Time.Before(c.End) {
+		if c.Covers(r.Time) {
 			return true
 		}
 	}
 	for _, rule := range d.Rules {
+		if rule.SkipModelUpdate {
+			continue
+		}
 		if rule.SkipActualBelow != nil && r.Actual < *rule.SkipActualBelow {
 			return true
 		}
