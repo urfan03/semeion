@@ -767,7 +767,7 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 			}
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: v,
-				Actual: float64(present[v]), Score: score, Direction: core.DirUp,
+				Actual: float64(present[v]), Probability: freqAcross, Score: score, Direction: core.DirUp,
 				Kind: kind, Influencers: []core.Influencer{{Field: d.ByField, Value: v}},
 			})
 		}

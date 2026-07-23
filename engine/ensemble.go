@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/urfan03/semeion/core"
+	"github.com/urfan03/semeion/stats"
 )
 
 func Ensemble(results []core.BucketResult) []core.BucketResult {
@@ -20,7 +21,7 @@ func Ensemble(results []core.BucketResult) []core.BucketResult {
 		nb := core.BucketResult{Time: br.Time}
 		for _, sk := range order {
 			recs := bySeries[sk]
-			combined := 1.0
+			stat := 0.0
 			detectors := make([]core.Influencer, 0, len(recs))
 			for _, r := range recs {
 				p := r.Probability
@@ -33,9 +34,10 @@ func Ensemble(results []core.BucketResult) []core.BucketResult {
 				if p > 1 {
 					p = 1
 				}
-				combined *= p
+				stat += -2 * math.Log(p)
 				detectors = append(detectors, core.Influencer{Field: "detector", Value: r.Detector, Score: r.Score / 100})
 			}
+			combined := stats.ChiSquareTail(stat, 2*len(recs))
 			score := ensembleScore(combined)
 			nb.Records = append(nb.Records, core.Record{
 				Time: br.Time, Detector: "ensemble", Series: sk,
