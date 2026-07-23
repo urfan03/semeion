@@ -31,6 +31,7 @@ type Alert struct {
 	Direction   string            `json:"direction,omitempty"`
 	Kind        string            `json:"kind,omitempty"`
 	Template    string            `json:"template,omitempty"`
+	Note        string            `json:"note,omitempty"` // free-text annotation (e.g. a digest summary)
 	Influencers []core.Influencer `json:"influencers,omitempty"`
 }
 
@@ -57,6 +58,9 @@ func (a Alert) Title() string {
 
 // Description explains the record in words: what was seen, what was expected.
 func (a Alert) Description() string {
+	if a.Note != "" && a.Kind == "digest" {
+		return a.Note // a digest carries its own summary, not the actual/typical shape
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "actual %.4g, typical %.4g", a.Actual, a.Typical)
 	if a.Direction != "" {
@@ -97,14 +101,28 @@ type Notifier struct {
 	Dedup    time.Duration // re-alert window per (job, detector, series); 0 disables
 	OnError  func(sink string, a Alert, err error)
 
-	mu   sync.Mutex
-	last map[string]time.Time
+	// Flapping suppression: a series that keeps alerting (FlapThreshold admitted
+	// alerts within FlapWindow) is unstable — paging on every cycle is noise. Once
+	// flagged, further alerts for that series are suppressed until it stays quiet
+	// for FlapWindow. 0 threshold disables. Flapped counts the suppressed storms.
+	FlapThreshold int
+	FlapWindow    time.Duration
+	Flapped       int64
+
+	mu      sync.Mutex
+	last    map[string]time.Time
+	history map[string][]time.Time // recent admitted alert bucket-times per key (for flap detection)
 }
 
 // NewNotifier builds a notifier with sensible on-call defaults: only warning and
-// above, and at most one page per series per 30 minutes.
+// above, at most one page per series per 30 minutes, and flapping suppression
+// after 5 alerts within 2 hours.
 func NewNotifier(sinks ...Sink) *Notifier {
-	return &Notifier{Sinks: sinks, MinScore: 50, Dedup: 30 * time.Minute, last: map[string]time.Time{}}
+	return &Notifier{
+		Sinks: sinks, MinScore: 50, Dedup: 30 * time.Minute,
+		FlapThreshold: 5, FlapWindow: 2 * time.Hour,
+		last: map[string]time.Time{}, history: map[string][]time.Time{},
+	}
 }
 
 // Notify sends every qualifying record in results. It returns how many alerts
@@ -179,6 +197,27 @@ func (n *Notifier) admit(a Alert) bool {
 	// suppress exactly the same alerts a live run would.
 	if prev, ok := n.last[key]; ok && a.Time.Sub(prev) < n.Dedup {
 		return false
+	}
+	// Flapping: count admitted alerts within the rolling FlapWindow; once a series
+	// exceeds the threshold, suppress it until it goes quiet for a full window.
+	if n.FlapThreshold > 0 && n.FlapWindow > 0 {
+		if n.history == nil {
+			n.history = map[string][]time.Time{}
+		}
+		cutoff := a.Time.Add(-n.FlapWindow)
+		h := n.history[key][:0:0]
+		for _, t := range n.history[key] {
+			if t.After(cutoff) {
+				h = append(h, t)
+			}
+		}
+		h = append(h, a.Time)
+		n.history[key] = h
+		if len(h) > n.FlapThreshold {
+			n.Flapped++
+			n.last[key] = a.Time // keep dedup anchored so the storm stays suppressed
+			return false
+		}
 	}
 	n.last[key] = a.Time
 	return true

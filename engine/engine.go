@@ -928,10 +928,42 @@ func (e *Engine) suppressed(d jobspec.Detector, r core.Record) bool {
 		if rule.SkipActualAbove != nil && r.Actual > *rule.SkipActualAbove {
 			return true
 		}
+		diff := math.Abs(r.Actual - r.Typical)
+		if rule.SkipDiffBelow != nil && diff < *rule.SkipDiffBelow {
+			return true
+		}
+		if rule.SkipDiffRatioBelow != nil && r.Typical != 0 && diff/math.Abs(r.Typical) < *rule.SkipDiffRatioBelow {
+			return true
+		}
+		if len(rule.SkipHoursUTC) > 0 && containsInt(rule.SkipHoursUTC, r.Time.UTC().Hour()) {
+			return true
+		}
+		if len(rule.SkipWeekdaysUTC) > 0 && containsInt(rule.SkipWeekdaysUTC, int(r.Time.UTC().Weekday())) {
+			return true
+		}
 		for _, v := range rule.SkipValues {
 			if r.Series == v {
 				return true
 			}
+		}
+		if len(rule.SkipInfluencer) > 0 {
+			for _, infl := range r.Influencers {
+				for _, v := range rule.SkipInfluencer[infl.Field] {
+					if infl.Value == v {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// containsInt reports whether xs contains v.
+func containsInt(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
 		}
 	}
 	return false

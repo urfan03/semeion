@@ -81,12 +81,28 @@ type Calendar struct {
 }
 
 // Rule filters a detector's results (Elastic ML job rules / filters): suppress
-// anomalies whose actual value is trivially small/large, or whose series value
-// is on a safelist.
+// anomalies whose actual value is trivially small/large, whose deviation from the
+// typical value is negligible, whose series value is safelisted, that fall in a
+// muted wall-clock window, or that are attributed to a safelisted dimension value.
 type Rule struct {
 	SkipActualBelow *float64 `json:"skip_actual_below,omitempty" yaml:"skip_actual_below,omitempty"`
 	SkipActualAbove *float64 `json:"skip_actual_above,omitempty" yaml:"skip_actual_above,omitempty"`
 	SkipValues      []string `json:"skip_values,omitempty"       yaml:"skip_values,omitempty"` // safelist of series values
+	// SkipDiffBelow suppresses when |actual − typical| is below an ABSOLUTE floor
+	// (a spike that is statistically unusual but operationally tiny).
+	SkipDiffBelow *float64 `json:"skip_diff_below,omitempty" yaml:"skip_diff_below,omitempty"`
+	// SkipDiffRatioBelow suppresses when |actual − typical| / |typical| is below a
+	// RELATIVE floor (e.g. 0.1 = ignore deviations under 10% of the baseline).
+	SkipDiffRatioBelow *float64 `json:"skip_diff_ratio_below,omitempty" yaml:"skip_diff_ratio_below,omitempty"`
+	// SkipHoursUTC mutes results whose bucket falls in these hours-of-day (UTC) —
+	// a known nightly batch window, say. SkipWeekdaysUTC does the same per weekday
+	// (0 = Sunday).
+	SkipHoursUTC    []int `json:"skip_hours_utc,omitempty"    yaml:"skip_hours_utc,omitempty"`
+	SkipWeekdaysUTC []int `json:"skip_weekdays_utc,omitempty" yaml:"skip_weekdays_utc,omitempty"`
+	// SkipInfluencer safelists dimension values: if the record is attributed to
+	// any listed field=value (e.g. env=staging), it is suppressed — a filter-ref
+	// scoped to an influencer, not just the by/partition series key.
+	SkipInfluencer map[string][]string `json:"skip_influencer,omitempty" yaml:"skip_influencer,omitempty"`
 }
 
 // Job is a complete anomaly-detection configuration.
