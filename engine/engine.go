@@ -69,6 +69,7 @@ type Engine struct {
 	distrib    map[string]*detect.DistributionModel // distribution-based per-series
 	multivar   map[string]*detect.MultivariateModel // multivariate per-series
 	slotModels map[string]*detect.Model             // per wall-clock slot (time_of_day/week)
+	geo        map[string]*detect.GeoModel          // per-series location baseline (lat_long)
 	rare       map[string]*rareTracker              // per rare-detector value frequencies
 	provider   model.Provider                       // heavy-model math (seasonality, …)
 	threshold  float64
@@ -133,6 +134,7 @@ func NewWithProvider(job jobspec.Job, prov model.Provider) (*Engine, error) {
 		distrib:    make(map[string]*detect.DistributionModel),
 		multivar:   make(map[string]*detect.MultivariateModel),
 		slotModels: make(map[string]*detect.Model),
+		geo:        make(map[string]*detect.GeoModel),
 		rare:       make(map[string]*rareTracker),
 		provider:   prov,
 		threshold:  defaultThreshold,
@@ -178,6 +180,8 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 			e.scoreInfoContent(&br, d, bt, pts)
 		case d.Function == jobspec.FuncTimeOfDay || d.Function == jobspec.FuncTimeOfWeek:
 			e.scoreTimeOf(&br, d, bt, pts)
+		case d.Function == jobspec.FuncLatLong:
+			e.scoreGeo(&br, d, bt, pts)
 		case d.IsPopulation():
 			e.scorePopulation(&br, d, bt, pts)
 		default:
@@ -520,6 +524,69 @@ func multivarInfluencers(fields []string, contrib []float64) []core.Influencer {
 	return out
 }
 
+// scoreGeo scores each series' bucket LOCATION (the mean of the bucket's points'
+// lat/lon) against the series' learned geographic centroid — an unusually distant
+// location fires. Points carry their coordinates in Values["lat"]/["lon"].
+func (e *Engine) scoreGeo(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
+	bySeries := make(map[string][]core.DataPoint)
+	for _, p := range pts {
+		sk := seriesKey(d, p.Fields)
+		bySeries[sk] = append(bySeries[sk], p)
+	}
+	for sk, sp := range bySeries {
+		lat, lon, ok := meanLatLon(sp)
+		if !ok {
+			continue
+		}
+		mk := d.ID() + "|" + sk
+		e.touchSeries(mk)
+		gm := e.geo[mk]
+		if gm == nil {
+			gm = detect.NewGeoModel()
+			e.geo[mk] = gm
+		}
+		actualKm, _ := gm.DistanceKm(lat, lon) // distance from the centroid learned SO FAR
+		prob, score, typicalKm, dir := gm.Observe(lat, lon)
+		if score >= e.threshold {
+			e.emit(br, d, core.Record{
+				Time: bt, Detector: d.ID(), Series: sk,
+				Actual: actualKm, Typical: typicalKm, Probability: prob,
+				Score: score, Direction: dir, Kind: "lat_long",
+				Influencers: e.influencers(d, sp),
+			})
+		}
+	}
+}
+
+// meanLatLon returns the mean location of a bucket's points (via unit-vector
+// averaging, correct across the antimeridian/poles). ok is false when no point
+// carries both coordinates.
+func meanLatLon(pts []core.DataPoint) (lat, lon float64, ok bool) {
+	var x, y, z float64
+	n := 0
+	for _, p := range pts {
+		if p.Values == nil {
+			continue
+		}
+		la, laok := p.Values["lat"]
+		lo, look := p.Values["lon"]
+		if !laok || !look {
+			continue
+		}
+		phi, lam := la*math.Pi/180, lo*math.Pi/180
+		x += math.Cos(phi) * math.Cos(lam)
+		y += math.Cos(phi) * math.Sin(lam)
+		z += math.Sin(phi)
+		n++
+	}
+	if n == 0 {
+		return 0, 0, false
+	}
+	lon = math.Atan2(y, x) * 180 / math.Pi
+	lat = math.Atan2(z, math.Hypot(x, y)) * 180 / math.Pi
+	return lat, lon, true
+}
+
 // scoreInfoContent scores the Shannon entropy (bits) of a by_field's value
 // distribution per bucket — a spike in diversity (e.g. DGA-like domains, a fan-
 // out of error codes) shows up as an entropy anomaly. Split by partition only.
@@ -779,6 +846,7 @@ func (e *Engine) dropSeries(key string) {
 	delete(e.distrib, key)
 	delete(e.multivar, key)
 	delete(e.slotModels, key)
+	delete(e.geo, key)
 	delete(e.seriesScores, key)
 	e.Evicted++
 }
@@ -1084,6 +1152,7 @@ type Snapshot struct {
 	Distrib  map[string]detect.DistributionState `json:"distrib,omitempty"`
 	Multivar map[string]detect.MultivariateState `json:"multivar,omitempty"`
 	Slots    map[string]detect.ModelState        `json:"slots,omitempty"`
+	Geo      map[string]detect.GeoState          `json:"geo,omitempty"`
 }
 
 // RareState persists a rare detector's value frequencies.
@@ -1122,6 +1191,10 @@ func (e *Engine) Snapshot() Snapshot {
 	for k, m := range e.slotModels {
 		slots[k] = m.State()
 	}
+	geo := make(map[string]detect.GeoState, len(e.geo))
+	for k, m := range e.geo {
+		geo[k] = m.State()
+	}
 	return Snapshot{
 		JobName:   e.job.Name,
 		Threshold: e.threshold,
@@ -1133,6 +1206,7 @@ func (e *Engine) Snapshot() Snapshot {
 		Distrib:   dist,
 		Multivar:  mv,
 		Slots:     slots,
+		Geo:       geo,
 	}
 }
 
@@ -1172,6 +1246,10 @@ func (e *Engine) Restore(s Snapshot) {
 	for k, st := range s.Slots {
 		e.slotModels[k] = detect.ModelFromState(st)
 	}
+	e.geo = make(map[string]*detect.GeoModel, len(s.Geo))
+	for k, st := range s.Geo {
+		e.geo[k] = detect.GeoFromState(st)
+	}
 	// Re-seed the LRU so restored models are subject to the same memory bound.
 	e.seriesLRU = make(map[string]int64)
 	e.lruTick = 0
@@ -1192,6 +1270,10 @@ func (e *Engine) Restore(s Snapshot) {
 		e.seriesLRU[k] = e.lruTick
 	}
 	for k := range e.slotModels {
+		e.lruTick++
+		e.seriesLRU[k] = e.lruTick
+	}
+	for k := range e.geo {
 		e.lruTick++
 		e.seriesLRU[k] = e.lruTick
 	}

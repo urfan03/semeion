@@ -33,6 +33,7 @@ const (
 	FuncInfoContent   Function = "info_content"   // entropy of by_field's value distribution
 	FuncTimeOfDay     Function = "time_of_day"    // events at an unusual hour-of-day
 	FuncTimeOfWeek    Function = "time_of_week"   // events at an unusual hour-of-week
+	FuncLatLong       Function = "lat_long"       // events at an unusual location (Values lat/lon)
 )
 
 // Side controls which deviations count as anomalous — the equivalent of
@@ -182,6 +183,14 @@ func (d Detector) ID() string {
 		return fmt.Sprintf("info_content(%s)", d.ByField)
 	case d.Function == FuncTimeOfDay || d.Function == FuncTimeOfWeek:
 		return string(d.Function)
+	case d.Function == FuncLatLong:
+		if d.OverField != "" {
+			return "lat_long over " + d.OverField
+		}
+		if d.ByField != "" {
+			return "lat_long by " + d.ByField
+		}
+		return "lat_long"
 	case d.OverField != "" && d.Field != "":
 		return fmt.Sprintf("%s(%s) over %s", d.Function, d.Field, d.OverField)
 	case d.OverField != "":
