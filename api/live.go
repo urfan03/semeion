@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/urfan03/semeion/alert"
 	"github.com/urfan03/semeion/core"
 	"github.com/urfan03/semeion/engine"
+	"github.com/urfan03/semeion/ingest"
 	"github.com/urfan03/semeion/jobspec"
 	"github.com/urfan03/semeion/logcat"
 	"github.com/urfan03/semeion/otlp"
@@ -401,6 +403,45 @@ func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 		anomalies += len(s.pushLogs(r.Context(), lj, lines))
 	}
 	writeJSON(w, map[string]any{"accepted": len(lines), "jobs": jobs, "anomalies": anomalies})
+}
+
+// handleCloudflareLogs accepts a Cloudflare Logpush/Logpull NDJSON body, parses
+// each HTTP-request event into a dimensioned data point, and fans it to every
+// live metric job bound to the "cloudflare" metric (or to no metric) plus every
+// categorization job (as a normalized request signature). One firehose feeds
+// traffic, error-rate, latency, fan-out, geo and path-diversity detectors at
+// once.
+func (s *Server) handleCloudflareLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	body, err := readLimited(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	points, skipped, err := ingest.ParseLogpush(bytes.NewReader(body))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	metricJobs := s.metricJobs(ingest.CloudflareMetric)
+	anomalies := 0
+	for _, lj := range metricJobs {
+		anomalies += len(s.pushPoints(r.Context(), lj, points))
+	}
+	logJobs := s.logJobs()
+	if len(logJobs) > 0 {
+		lines := ingest.LogpushLines(points)
+		for _, lj := range logJobs {
+			anomalies += len(s.pushLogs(r.Context(), lj, lines))
+		}
+	}
+	writeJSON(w, map[string]any{
+		"accepted": len(points), "skipped": skipped,
+		"metric_jobs": len(metricJobs), "log_jobs": len(logJobs), "anomalies": anomalies,
+	})
 }
 
 // metricJobs returns the metric jobs a named OTLP metric feeds. A job with no

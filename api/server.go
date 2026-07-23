@@ -147,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/otlp/v1/metrics", s.handleOTLPMetrics)
 	mux.HandleFunc("/v1/otlp/v1/logs", s.handleOTLPLogs)
 	mux.HandleFunc("/v1/otlp/v1/traces", s.handleOTLPTraces)
+	mux.HandleFunc("/v1/cloudflare/logs", s.handleCloudflareLogs)
 	mux.HandleFunc("/v1/topology", s.handleTopology)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
