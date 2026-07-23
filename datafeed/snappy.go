@@ -5,18 +5,27 @@ import (
 	"fmt"
 )
 
+const maxSnappyDecoded = 64 << 20
+
 func snappyDecode(src []byte) ([]byte, error) {
 	dLen64, n := binary.Uvarint(src)
 	if n <= 0 {
 		return nil, fmt.Errorf("snappy: bad length prefix")
 	}
-	if dLen64 > 1<<32 {
-		return nil, fmt.Errorf("snappy: implausible decoded length %d", dLen64)
+	if dLen64 > maxSnappyDecoded {
+		return nil, fmt.Errorf("snappy: declared length %d exceeds cap", dLen64)
 	}
 	dLen := int(dLen64)
-	dst := make([]byte, 0, dLen)
+	initCap := dLen
+	if initCap > 1<<20 {
+		initCap = 1 << 20
+	}
+	dst := make([]byte, 0, initCap)
 	i := n
 	for i < len(src) {
+		if len(dst) > maxSnappyDecoded {
+			return nil, fmt.Errorf("snappy: decoded output exceeds cap")
+		}
 		tag := src[i]
 		switch tag & 0x03 {
 		case 0x00:
