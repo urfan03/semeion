@@ -296,6 +296,12 @@ budgets with their burn and severity). Endpoints:
 | `GET /v1/jobs/{name}/categories` | learned log-category catalogue (id, template, example messages, match counts) |
 | `POST /v1/otlp/v1/metrics` | **OTLP/HTTP** metrics export → routed to the live jobs that claim each metric |
 | `POST /v1/otlp/v1/logs` | OTLP/HTTP logs export → fed to every live categorization job |
+| `POST /v1/cloudflare/logs` | **Cloudflare Logpush/Logpull** NDJSON → dimensioned points fanned into "cloudflare" metric + categorization jobs |
+| `POST /v1/prometheus/write` | **Prometheus remote-write** (Snappy+protobuf) → samples fanned into the live jobs that claim each metric |
+| `POST /v1/changepoints` | `{"series":[...]}` → change points, stable **regimes**, and the probability the baseline **shifted** |
+| `POST /v1/leadlag` | lead-lag + **Granger** causality: pairwise (`a`/`b`) or rank `candidates` by causal lead over a `target` (RCA ordering) |
+| `GET /v1/influencers/{job}` | ranked **influencers** — the entities carrying the most anomalous mass (optional `?field=`) |
+| `GET /v1/jobs/{name}/interim` · `/categories` | provisional open-bucket scores · learned log-category catalogue |
 | `GET /v1/incidents` | tracked incidents (stable ids, open/resolved status); `?stateless=1` for a fresh one-shot correlation |
 | `GET /v1/incidents/open` · `/resolved` | the tracked open / recently-resolved sets |
 | `POST /v1/correlate` | correlate a caller-supplied set of symptoms/changes (one-shot, untracked) |
@@ -422,6 +428,7 @@ Three layers, so the engine stays a clean library and Python is optional:
 | **A6 🚧** | **Alerting** (`alert`: Slack / webhook / Alertmanager sinks, score floor + bucket-time dedup) ✅ · **`watch`** continuous mode (poll → detect → alert → persist, resumable, SIGTERM-safe) ✅ · **live jobs + OTLP/HTTP ingestion** (push metrics *and* logs straight from an OTel Collector) ✅ · **population outlier detection** (4-method ensemble + feature influence, `outliers` CLI + API, optional pyod plane) ✅ · Kafka ingestion, gRPC API — pending |
 | **Hardening ✅** | Full post-audit pass: 8 correctness fixes (snapshot-all-models, robust flat-baseline, exponential dips, renormalization, cross-batch topology, change-precedence, model-memory LRU, out-of-order guard), statistical recalibration (multi-bucket, two-sided, change-point trend, AIC, seasonality detrend + calendar-phase), correlation/SLO fixes (confidence share, coarse-influencer guard, calendar training-exclusion, no-data SLO, MWMBR burn, incident-identity), production (auth/TLS/rate-limit/body-cap/secret-redaction/atomic-state), and parity additions (`distinct_count`/`non_zero_count`/`varp`, forecast bands, influence scores). See CHANGELOG. |
 | **Precision ✅** | Ten precision/functionality upgrades (each with a regression test): **trend-aware baseline** (fitted-line scoring for genuine trends, steps still caught), **per-bucket typical bounds** (`lower`/`upper`), **warm-up confidence ramp**, **concept-drift rebase**, **adaptive per-series sensitivity** (`sensitivity`), new functions **`rate`/`non_null_sum`/`metric`/`freq_rare`**, **gap / missing-bucket** zero-fill for count-family (batch + streaming), **predictive breach** alerting (forecast × threshold/SLO), **interim** open-bucket results (`is_interim`, `/v1/jobs/{name}/interim`), and **categorization depth** (multiple examples + match counts, `/v1/jobs/{name}/categories`). See CHANGELOG. |
+| **Reach ✅** | **Cloudflare** log anomaly detection (Logpush/Logpull → `ingest.CloudflareJob`, `/v1/cloudflare/logs`, `semeion cloudflare`); **genuine multi-seasonality** (daily + weekly, deflation + variance-gain); **regime detection** + **lead-lag/Granger** causality for RCA ordering (`/v1/changepoints`, `/v1/leadlag`); **`lat_long`** geo detector; **rich detector rules** (diff-ratio / hour / influencer safelists); **NAB** accuracy harness; alert **flapping suppression + digest**; **influencer aggregation** (`/v1/influencers`); model-**snapshot revert** (`run --revert`); **Prometheus remote-write** receiver; **Grafana SimpleJSON** datasource. See CHANGELOG. |
 
 ### Intelligence platform (consumes the engine)
 

@@ -4,7 +4,60 @@ All notable changes to semeion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0]
+
+Cloudflare log anomaly detection, a proof-of-quality benchmark, and eleven
+capability additions — each with a regression test; all 20 packages green.
+
+### Cloudflare logs
+
+- **Cloudflare Logpush/Logpull ingestion** (`ingest.ParseLogpush`): parse the
+  `http_requests` NDJSON firehose (RFC3339 / unix-ns / unix-s timestamps) into
+  dimensioned data points — host, path (ids/uuids collapsed to `:id`), method,
+  status, status_class, country, colo, cache, waf, client_ip + metrics
+  (origin_ms, ttfb_ms, resp_bytes).
+- **`ingest.CloudflareJob`**: a ready-made detector set (per-host traffic,
+  error-class spike, origin latency, client fan-out, rare country, path
+  diversity).
+- **`POST /v1/cloudflare/logs`** fans a Logpush body into live "cloudflare"
+  metric jobs and categorization jobs; **`semeion cloudflare --file`** CLI.
+
+### Detection & statistics
+
+- **Genuine multi-seasonality**: model two independent cycles (daily AND weekly)
+  with an additive back-fitted decomposition, the second period found by
+  deflation and admitted only on a ≥10% residual-variance gain (rejects
+  harmonics). Persisted across restarts.
+- **Regime detection** (`/v1/changepoints`): stable regimes between change points
+  + a Welch-based probability that the baseline genuinely shifted (vs a
+  transient).
+- **Lead-lag / Granger causality** (`stats`, `/v1/leadlag`): which series moved
+  first, and whether A's past predicts B — `correlate.OrderByCausality` gives
+  data-driven root-cause ordering.
+- **`lat_long` detector**: learns a series' typical location (spherical centroid)
+  and flags an unusually distant one (impossible-travel / anomalous geo).
+- **New detector functions** (from 0.2.0 groundwork): rich detector **rules** —
+  `skip_diff_below` / `skip_diff_ratio_below`, `skip_hours_utc` /
+  `skip_weekdays_utc`, and `skip_influencer` (safelist by attributed dimension).
+
+### Operations & proof
+
+- **NAB accuracy harness** (`benchmark`): the Numenta Anomaly Benchmark scoring
+  model (scaled-sigmoid early-detection reward, application profiles, 0–100
+  normalized) + NAB CSV/window loaders — objective, published detection quality.
+- **Alert flapping suppression + digest**: an oscillating series is muted after a
+  threshold within a window; `alert.Digest` folds low-urgency alerts into one
+  periodic summary.
+- **Influencer-level aggregation** (`/v1/influencers/{job}`): the "who is
+  responsible" roll-up of the entities carrying the most anomalous mass.
+- **Model snapshot revert** (`store` versioning; `run --list-snapshots` /
+  `--revert`): recover from a training window a one-off event poisoned.
+- **Prometheus remote-write receiver** (`POST /v1/prometheus/write`): a push
+  datafeed with a hand-rolled Snappy-block + protobuf decoder (no dependency).
+- **Grafana SimpleJSON datasource** (`/grafana/search|query|annotations`): point
+  a datasource straight at semeion, no custom plugin.
+
+## [0.2.0]
 
 The first end-to-end line is complete: metrics/logs/traces in → anomalies →
 incidents → ranked root cause → explanation + recommended fix → error budgets,
