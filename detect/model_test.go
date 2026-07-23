@@ -7,8 +7,6 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// A steady baseline should stay quiet; a large spike must score high (up); a
-// return to normal must fall back to a low score.
 func TestModelWarmupSpikeAndReturn(t *testing.T) {
 	m := NewModel(jobspec.SideBoth)
 
@@ -31,23 +29,21 @@ func TestModelWarmupSpikeAndReturn(t *testing.T) {
 	}
 }
 
-// A "high" detector must ignore dips.
 func TestModelHighSideIgnoresDips(t *testing.T) {
 	m := NewModel(jobspec.SideHigh)
 	for i := 0; i < 40; i++ {
 		m.Observe(100)
 	}
-	_, dipScore, _, _ := m.Observe(1) // huge dip, but side=high
+	_, dipScore, _, _ := m.Observe(1)
 	if dipScore > 25 {
 		t.Fatalf("high-side dip: expected low score, got %.1f", dipScore)
 	}
-	_, spikeScore, _, _ := m.Observe(1000) // huge spike, should fire
+	_, spikeScore, _, _ := m.Observe(1000)
 	if spikeScore < 50 {
 		t.Fatalf("high-side spike: expected score ≥ 50, got %.1f", spikeScore)
 	}
 }
 
-// During warm-up no score should be emitted.
 func TestModelWarmupSilent(t *testing.T) {
 	m := NewModel(jobspec.SideBoth)
 	for i := 0; i < defaultWarmup-1; i++ {

@@ -14,13 +14,11 @@ func TestNABScoringMonotonicity(t *testing.T) {
 	}
 	prof := StandardProfile()
 
-	// Null detector: nothing flagged → normalized 0.
 	null := NABNormalized(nil, win, prof)
 	if null.Normalized != 0 || null.FN != 2 {
 		t.Fatalf("null detector should score 0 with 2 misses, got %+v", null)
 	}
 
-	// Perfect detector: flag the front of each window → normalized 100.
 	perfect := NABNormalized([]time.Time{win[0].Start, win[1].Start}, win, prof)
 	if perfect.Normalized < 99.9 {
 		t.Fatalf("front-of-window detection should score ~100, got %v", perfect.Normalized)
@@ -29,14 +27,12 @@ func TestNABScoringMonotonicity(t *testing.T) {
 		t.Fatalf("perfect detector counts wrong: %+v", perfect)
 	}
 
-	// Early beats late inside the same window.
 	early := NABNormalized([]time.Time{win[0].Start.Add(time.Minute), win[1].Start}, win, prof)
 	late := NABNormalized([]time.Time{win[0].End.Add(-time.Minute), win[1].Start}, win, prof)
 	if early.Normalized <= late.Normalized {
 		t.Fatalf("earlier detection should score higher: early=%v late=%v", early.Normalized, late.Normalized)
 	}
 
-	// A false positive far from any window lowers the score below perfect.
 	withFP := NABNormalized([]time.Time{win[0].Start, win[1].Start, t0.Add(35 * time.Minute)}, win, prof)
 	if withFP.FP != 1 {
 		t.Fatalf("expected 1 false positive, got %+v", withFP)
@@ -45,7 +41,6 @@ func TestNABScoringMonotonicity(t *testing.T) {
 		t.Fatalf("a false positive must lower the score: withFP=%v perfect=%v", withFP.Normalized, perfect.Normalized)
 	}
 
-	// reward_low_FP penalizes that same FP harder than standard.
 	fpStd := NABNormalized([]time.Time{win[0].Start, win[1].Start, t0.Add(35 * time.Minute)}, win, StandardProfile())
 	fpLow := NABNormalized([]time.Time{win[0].Start, win[1].Start, t0.Add(35 * time.Minute)}, win, LowFPProfile())
 	if fpLow.Normalized >= fpStd.Normalized {

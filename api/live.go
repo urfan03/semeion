@@ -21,30 +21,23 @@ import (
 	"github.com/urfan03/semeion/otlp"
 )
 
-// maxLiveResults caps the per-job result ring. A live job runs forever; without
-// a cap the server would grow without bound.
 const maxLiveResults = 5000
 
-// liveJob is a job whose engine stays resident: points are pushed in over time,
-// buckets close as data advances, and anomalies are alerted as they appear.
-//
-// This is what makes `serve` a service rather than a batch analyser — the same
-// engine `watch` runs, driven by pushes instead of polls.
 type liveJob struct {
 	mu sync.Mutex
 
 	Name      string
 	Spec      jobspec.Job
-	Metric    string // OTLP metric name that feeds this job ("" = accept any)
+	Metric    string
 	Threshold float64
-	Logs      bool // categorization job (log lines) instead of a metric job
+	Logs      bool
 
 	eng *engine.Engine
 	cat *logcat.Categorizer
 
-	Points  int       // points/lines ingested so far
-	Created time.Time // registration time
-	Last    time.Time // timestamp of the newest ingested point
+	Points  int
+	Created time.Time
+	Last    time.Time
 }
 
 type liveJobRequest struct {
@@ -52,15 +45,11 @@ type liveJobRequest struct {
 	Metric    string          `json:"metric"`
 	Threshold float64         `json:"threshold"`
 	Logs      bool            `json:"logs"`
-	// For a logs job the spec may be omitted; name + bucket_span are enough.
+
 	Name       string `json:"name"`
 	BucketSpan string `json:"bucket_span"`
 }
 
-// ── registry ─────────────────────────────────────────────────────────────────
-
-// RegisterJob creates (or replaces) a live job. Replacing resets its baselines —
-// a changed job definition must not keep the old job's learned model.
 func (s *Server) RegisterJob(req liveJobRequest) (*liveJob, error) {
 	lj := &liveJob{Metric: req.Metric, Threshold: req.Threshold, Logs: req.Logs, Created: time.Now().UTC()}
 	if lj.Threshold <= 0 {
@@ -93,7 +82,7 @@ func (s *Server) RegisterJob(req liveJobRequest) (*liveJob, error) {
 		s.live = map[string]*liveJob{}
 	}
 	s.live[lj.Name] = lj
-	delete(s.results, lj.Name) // stale results belong to the previous definition
+	delete(s.results, lj.Name)
 	s.mu.Unlock()
 	return lj, nil
 }
@@ -119,15 +108,11 @@ func (s *Server) liveJob(name string) (*liveJob, bool) {
 	return lj, ok
 }
 
-// WithNotifier routes live-job anomalies to alert sinks.
 func (s *Server) WithNotifier(n *alert.Notifier) *Server {
 	s.notifier = n
 	return s
 }
 
-// ── ingestion ────────────────────────────────────────────────────────────────
-
-// pushPoints feeds points into a live job and publishes whatever closed.
 func (s *Server) pushPoints(ctx context.Context, lj *liveJob, points []core.DataPoint) []core.BucketResult {
 	if len(points) == 0 {
 		return nil
@@ -146,7 +131,6 @@ func (s *Server) pushPoints(ctx context.Context, lj *liveJob, points []core.Data
 	return s.publish(ctx, lj, closed)
 }
 
-// pushLogs is the categorization equivalent of pushPoints.
 func (s *Server) pushLogs(ctx context.Context, lj *liveJob, lines []core.LogLine) []core.BucketResult {
 	if len(lines) == 0 {
 		return nil
@@ -165,8 +149,6 @@ func (s *Server) pushLogs(ctx context.Context, lj *liveJob, lines []core.LogLine
 	return s.publish(ctx, lj, closed)
 }
 
-// publish keeps only buckets that carry an above-threshold record, stores them
-// on the job's ring, and alerts.
 func (s *Server) publish(ctx context.Context, lj *liveJob, closed []core.BucketResult) []core.BucketResult {
 	kept := make([]core.BucketResult, 0, len(closed))
 	for _, br := range closed {
@@ -203,19 +185,12 @@ func (s *Server) publish(ctx context.Context, lj *liveJob, closed []core.BucketR
 		}
 	}
 
-	// A new anomaly may open, grow or escalate an incident. Reconcile only when
-	// something was actually published, so the O(symptoms) correlation never
-	// runs on a quiet bucket.
 	if s.tracker != nil {
 		s.reconcileFromStore(ctx)
 	}
 	return kept
 }
 
-// ── handlers ─────────────────────────────────────────────────────────────────
-
-// handleLiveJobs implements POST /v1/jobs (create), and the /v1/jobs/{name}
-// sub-routes: GET (status), DELETE (remove), POST …/points, POST …/flush.
 func (s *Server) handleLiveJobs(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/jobs"), "/")
 
@@ -258,8 +233,6 @@ func (s *Server) handleLiveJobs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleCategories returns the learned log-category catalogue (id, template,
-// examples, match counts) for a categorization job. Metric jobs have none.
 func (s *Server) handleCategories(w http.ResponseWriter, _ *http.Request, lj *liveJob) {
 	if !lj.Logs {
 		writeJSON(w, map[string]any{"job": lj.Name, "categories": []logcat.CategoryDefinition{}})
@@ -271,10 +244,6 @@ func (s *Server) handleCategories(w http.ResponseWriter, _ *http.Request, lj *li
 	writeJSON(w, map[string]any{"job": lj.Name, "categories": cats})
 }
 
-// handleInterim returns provisional (is_interim) results for the job's still-open
-// buckets, scored against the current baseline without closing them — a
-// mid-bucket peek for real-time alerting. Logs (categorization) jobs have no
-// interim path and return an empty set.
 func (s *Server) handleInterim(w http.ResponseWriter, _ *http.Request, lj *liveJob) {
 	if lj.Logs {
 		writeJSON(w, map[string]any{"job": lj.Name, "interim": []core.BucketResult{}})
@@ -283,7 +252,7 @@ func (s *Server) handleInterim(w http.ResponseWriter, _ *http.Request, lj *liveJ
 	lj.mu.Lock()
 	all := lj.eng.Interim()
 	lj.mu.Unlock()
-	// Keep only buckets that carry an above-threshold provisional record.
+
 	kept := make([]core.BucketResult, 0, len(all))
 	for _, br := range all {
 		recs := make([]core.Record, 0, len(br.Records))
@@ -312,7 +281,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Content-Type must be set before WriteHeader, or it is ignored.
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(jobStatus(lj))
@@ -336,8 +305,6 @@ func (s *Server) handlePushPoints(w http.ResponseWriter, r *http.Request, lj *li
 	writeJSON(w, map[string]any{"job": lj.Name, "anomalies": out})
 }
 
-// handleFlush closes the still-open bucket — for the end of a backfill, or a
-// low-traffic job where the next point may be a long way off.
 func (s *Server) handleFlush(w http.ResponseWriter, r *http.Request, lj *liveJob) {
 	lj.mu.Lock()
 	var closed []core.BucketResult
@@ -350,8 +317,6 @@ func (s *Server) handleFlush(w http.ResponseWriter, r *http.Request, lj *liveJob
 	writeJSON(w, map[string]any{"job": lj.Name, "anomalies": s.publish(r.Context(), lj, closed)})
 }
 
-// handleOTLPMetrics accepts an OTLP/JSON metrics export and fans each data point
-// to every live job that claims its metric name.
 func (s *Server) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -381,7 +346,6 @@ func (s *Server) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"accepted": len(mps), "jobs": len(byJob), "anomalies": anomalies})
 }
 
-// handleOTLPLogs accepts an OTLP/JSON logs export and feeds every live logs job.
 func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -406,12 +370,6 @@ func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"accepted": len(lines), "jobs": jobs, "anomalies": anomalies})
 }
 
-// handleCloudflareLogs accepts a Cloudflare Logpush/Logpull NDJSON body, parses
-// each HTTP-request event into a dimensioned data point, and fans it to every
-// live metric job bound to the "cloudflare" metric (or to no metric) plus every
-// categorization job (as a normalized request signature). One firehose feeds
-// traffic, error-rate, latency, fan-out, geo and path-diversity detectors at
-// once.
 func (s *Server) handleCloudflareLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -445,10 +403,6 @@ func (s *Server) handleCloudflareLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handlePromRemoteWrite accepts a Prometheus remote_write request (Snappy-
-// compressed protobuf) and fans each sample to the live metric jobs bound to its
-// metric name (or to no metric). Prometheus can `remote_write` straight to
-// semeion — no scrape loop.
 func (s *Server) handlePromRemoteWrite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -481,8 +435,6 @@ func (s *Server) handlePromRemoteWrite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// metricJobs returns the metric jobs a named OTLP metric feeds. A job with no
-// Metric set accepts everything — handy for a single-metric collector pipeline.
 func (s *Server) metricJobs(metric string) []*liveJob {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

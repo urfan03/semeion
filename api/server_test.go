@@ -44,7 +44,6 @@ func TestAnalyzeResultsGrafanaUI(t *testing.T) {
 	srv := httptest.NewServer(NewServer().Handler())
 	defer srv.Close()
 
-	// analyze
 	resp, err := http.Post(srv.URL+"/v1/analyze", "application/json", bytes.NewReader(analyzeBody(t)))
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +60,6 @@ func TestAnalyzeResultsGrafanaUI(t *testing.T) {
 		t.Fatalf("analyze: job=%q records=%d (want apitest, >0)", ar.Job, ar.Records)
 	}
 
-	// results
 	r2, err := http.Get(srv.URL + "/v1/results/apitest")
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +69,6 @@ func TestAnalyzeResultsGrafanaUI(t *testing.T) {
 		t.Fatalf("results status %d", r2.StatusCode)
 	}
 
-	// grafana series
 	r3, err := http.Get(srv.URL + "/v1/grafana/apitest")
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +85,6 @@ func TestAnalyzeResultsGrafanaUI(t *testing.T) {
 		t.Fatalf("grafana series empty or missing time: %+v", series)
 	}
 
-	// UI
 	r4, err := http.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatal(err)

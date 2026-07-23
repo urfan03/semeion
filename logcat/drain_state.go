@@ -1,7 +1,5 @@
 package logcat
 
-// State is a serialisable snapshot of a Drain (its templates + parameters), so
-// discovered categories survive restarts.
 type State struct {
 	MaxDepth int       `json:"max_depth"`
 	SimTh    float64   `json:"sim_th"`
@@ -10,7 +8,6 @@ type State struct {
 	Clusters []Cluster `json:"clusters"`
 }
 
-// Export captures the current templates and parameters.
 func (d *Drain) Export() State {
 	cs := make([]Cluster, len(d.clusters))
 	for i, c := range d.clusters {
@@ -19,8 +16,6 @@ func (d *Drain) Export() State {
 	return State{MaxDepth: d.maxDepth, SimTh: d.simTh, MaxChild: d.maxChild, NextID: d.nextID, Clusters: cs}
 }
 
-// LoadState rebuilds a Drain from a snapshot, re-placing each template in the
-// parse tree so future messages match the restored clusters.
 func LoadState(s State) *Drain {
 	d := NewDrain()
 	if s.MaxDepth > 0 {

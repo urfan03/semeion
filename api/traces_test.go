@@ -12,7 +12,6 @@ import (
 	"github.com/urfan03/semeion/correlate"
 )
 
-// threeTierTrace renders gateway → checkout → payments-db.
 const threeTierTrace = `{"resourceSpans":[
  {"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"gateway"}}]},
   "scopeSpans":[{"spans":[{"traceId":"t1","spanId":"a","name":"GET /pay",
@@ -50,8 +49,6 @@ func TestOTLPTracesBuildTheGraph(t *testing.T) {
 	}
 }
 
-// The end-to-end promise of B2: once traces are known, the upstream service is
-// blamed even though it was noticed last and scores lowest.
 func TestIncidentsUseTopologyForRootCause(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
@@ -68,7 +65,7 @@ func TestIncidentsUseTopologyForRootCause(t *testing.T) {
 			Influencers: []core.Influencer{{Field: "service", Value: service}},
 		}}}
 	}
-	// User-facing gateway lights up first and worst; the database last and mildest.
+
 	s.Store("gateway-latency", []core.BucketResult{svc("gateway-latency", "gateway", 0, 95)})
 	s.Store("checkout-latency", []core.BucketResult{svc("checkout-latency", "checkout", 30*time.Second, 88)})
 	s.Store("db-latency", []core.BucketResult{svc("db-latency", "payments-db", time.Minute, 65)})
@@ -96,7 +93,7 @@ func TestIncidentsUseTopologyForRootCause(t *testing.T) {
 func TestTopologyIgnoredUntilTracesArrive(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
-	// No traces: correlation still works, just without the causal direction.
+
 	base := time.Now().UTC()
 	for i, svc := range []string{"a", "b"} {
 		ts := base.Add(time.Duration(i) * time.Second)

@@ -22,7 +22,6 @@ func httpClient(c *http.Client) *http.Client {
 	return &http.Client{Timeout: defaultTimeout}
 }
 
-// postJSON is the one place any sink talks HTTP.
 func postJSON(ctx context.Context, c *http.Client, url string, body any, headers map[string]string) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -38,9 +37,7 @@ func postJSON(ctx context.Context, c *http.Client, url string, body any, headers
 	}
 	resp, err := httpClient(c).Do(req)
 	if err != nil {
-		// A transport error's message embeds the full request URL, and a Slack /
-		// generic webhook URL IS the secret. Redact it so an outage doesn't write
-		// the credential to logs on every retry.
+
 		return fmt.Errorf("POST failed: %s", redactURL(err.Error(), url))
 	}
 	defer resp.Body.Close()
@@ -52,8 +49,6 @@ func postJSON(ctx context.Context, c *http.Client, url string, body any, headers
 	return nil
 }
 
-// redactURL replaces occurrences of the (secret-bearing) URL in a message with
-// a scheme+host-only form, so error logs never carry the full credential.
 func redactURL(msg, full string) string {
 	if full == "" {
 		return msg
@@ -65,14 +60,10 @@ func redactURL(msg, full string) string {
 	return strings.ReplaceAll(msg, full, safe)
 }
 
-// ── Slack ────────────────────────────────────────────────────────────────────
-
-// SlackSink posts to an incoming-webhook URL.
 type SlackSink struct {
 	WebhookURL string
 	HTTP       *http.Client
-	// LinkBase, when set, turns the job name into a link to your Explorer,
-	// e.g. https://semeion.internal → …/#job=<name>.
+
 	LinkBase string
 }
 
@@ -86,7 +77,7 @@ func (s *SlackSink) Send(ctx context.Context, a Alert) error {
 		title = fmt.Sprintf("<%s/#job=%s|%s>", strings.TrimRight(s.LinkBase, "/"), a.Job, title)
 	}
 	payload := map[string]any{
-		"text": a.Title(), // notification fallback
+		"text": a.Title(),
 		"attachments": []map[string]any{{
 			"color":     slackColor(a),
 			"title":     title,
@@ -102,18 +93,14 @@ func (s *SlackSink) Send(ctx context.Context, a Alert) error {
 func slackColor(a Alert) string {
 	switch a.Severity() {
 	case "critical":
-		return "#d93025" // red
+		return "#d93025"
 	case "warning":
-		return "#f59e0b" // amber
+		return "#f59e0b"
 	default:
-		return "#64748b" // slate
+		return "#64748b"
 	}
 }
 
-// ── Generic webhook ──────────────────────────────────────────────────────────
-
-// WebhookSink POSTs the raw alert JSON — the escape hatch for anything we don't
-// ship a dedicated sink for.
 type WebhookSink struct {
 	URL     string
 	Headers map[string]string
@@ -129,15 +116,11 @@ func (w *WebhookSink) Send(ctx context.Context, a Alert) error {
 	return postJSON(ctx, w.HTTP, w.URL, a, w.Headers)
 }
 
-// ── Alertmanager ─────────────────────────────────────────────────────────────
-
-// AlertmanagerSink pushes to Prometheus Alertmanager's v2 API, so anomalies land
-// in the same routing / silencing / on-call rules as the rest of your alerts.
 type AlertmanagerSink struct {
-	BaseURL string // e.g. http://alertmanager:9093
-	// Duration the alert stays firing without a refresh (default 3× dedup ≈ 10m).
+	BaseURL string
+
 	Resolve time.Duration
-	// ExtraLabels are merged into every alert (env, cluster, team, …).
+
 	ExtraLabels map[string]string
 	HTTP        *http.Client
 }
@@ -182,10 +165,6 @@ func (m *AlertmanagerSink) Send(ctx context.Context, a Alert) error {
 	return postJSON(ctx, m.HTTP, strings.TrimRight(m.BaseURL, "/")+"/api/v2/alerts", payload, nil)
 }
 
-// ── stdout ───────────────────────────────────────────────────────────────────
-
-// StdoutSink prints alerts — the default for `watch` when no sink is configured,
-// so a run is never silently doing nothing.
 type StdoutSink struct{ W io.Writer }
 
 func (s StdoutSink) Name() string { return "stdout" }

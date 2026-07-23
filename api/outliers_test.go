@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-// hostTable renders a JSON body of n normal hosts plus one with a broken io_wait.
 func hostTable(n int) string {
 	rows := make([]string, 0, n+1)
 	for i := 0; i < n; i++ {
@@ -58,14 +57,13 @@ func TestOutliersEndpoint(t *testing.T) {
 
 func TestOutliersRejectsIncompleteRows(t *testing.T) {
 	s := NewServer()
-	// A missing feature must fail loudly — imputing it would invent data.
+
 	body := `{"rows":[{"cpu":1,"mem":2},{"cpu":2,"mem":3},{"cpu":3}]}`
 	w := do(t, s.Handler(), http.MethodPost, "/v1/outliers", body)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "missing feature") {
 		t.Fatalf("expected a missing-feature error, got %d %s", w.Code, w.Body)
 	}
 
-	// Text-only rows have nothing to score.
 	w = do(t, s.Handler(), http.MethodPost, "/v1/outliers", `{"rows":[{"host":"a"},{"host":"b"},{"host":"c"}]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a table with no numeric fields, got %d", w.Code)
@@ -74,7 +72,7 @@ func TestOutliersRejectsIncompleteRows(t *testing.T) {
 
 func TestOutliersRespectsExplicitFeatures(t *testing.T) {
 	s := NewServer()
-	// io_wait is the only broken column; excluding it must calm the score down.
+
 	body := `{"features":["cpu","mem"],"rows":[` + strings.Join([]string{
 		`{"host":"a","cpu":50,"mem":60,"io_wait":10}`,
 		`{"host":"b","cpu":51,"mem":61,"io_wait":11}`,

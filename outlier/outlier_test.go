@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// cluster builds n rows drawn around centre with the given spread, using a
-// fixed seed so the test is deterministic.
 func cluster(rnd *rand.Rand, n int, centre []float64, spread float64) [][]float64 {
 	rows := make([][]float64, n)
 	for i := range rows {
@@ -25,7 +23,6 @@ func TestDetectFindsPlantedOutliers(t *testing.T) {
 	features := []string{"cpu", "mem", "io"}
 	rows := cluster(rnd, 200, []float64{50, 60, 10}, 3)
 
-	// Five hosts that do not belong, appended at known indices.
 	planted := map[int]bool{}
 	for _, p := range [][]float64{
 		{95, 62, 11}, {49, 5, 9}, {51, 59, 90}, {5, 5, 5}, {90, 95, 80},
@@ -58,7 +55,6 @@ func TestDetectFindsPlantedOutliers(t *testing.T) {
 		}
 	}
 
-	// The population itself must stay quiet — otherwise the score is useless.
 	var inlierScores []float64
 	for _, r := range res {
 		if !planted[r.Index] {
@@ -74,7 +70,7 @@ func TestFeatureInfluencePointsAtTheGuiltyColumn(t *testing.T) {
 	rnd := rand.New(rand.NewSource(11))
 	features := []string{"cpu", "mem", "io_wait"}
 	rows := cluster(rnd, 150, []float64{50, 60, 10}, 2)
-	// Normal on cpu and mem, wildly abnormal on io_wait only.
+
 	rows = append(rows, []float64{50, 60, 95})
 	idx := len(rows) - 1
 
@@ -98,7 +94,6 @@ func TestFeatureInfluencePointsAtTheGuiltyColumn(t *testing.T) {
 	}
 }
 
-// A clean population must not manufacture outliers.
 func TestNoFalsePositivesOnACleanPopulation(t *testing.T) {
 	rnd := rand.New(rand.NewSource(3))
 	rows := cluster(rnd, 300, []float64{10, 20}, 1)
@@ -112,13 +107,12 @@ func TestNoFalsePositivesOnACleanPopulation(t *testing.T) {
 			flagged++
 		}
 	}
-	// A Gaussian blob does have tails; a handful is fine, a swarm is not.
+
 	if flagged > len(rows)/20 {
 		t.Fatalf("%d/%d rows flagged on a clean population", flagged, len(rows))
 	}
 }
 
-// Identical rows are infinitely dense — the maths must not produce NaN.
 func TestDegenerateInputs(t *testing.T) {
 	same := [][]float64{{1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}}
 	res, err := Detect([]string{"a", "b"}, same, Options{})
@@ -134,7 +128,6 @@ func TestDegenerateInputs(t *testing.T) {
 		}
 	}
 
-	// A constant column must neither divide by zero nor dominate.
 	rows := [][]float64{{1, 5}, {2, 5}, {3, 5}, {50, 5}}
 	if _, err := Detect([]string{"v", "const"}, rows, Options{}); err != nil {
 		t.Fatal(err)
@@ -151,8 +144,6 @@ func TestDetectValidatesInput(t *testing.T) {
 	}
 }
 
-// Every method must agree that an obviously isolated row is odd; the ensemble
-// exists for the ambiguous cases, not this one.
 func TestAllMethodsAgreeOnAnObviousOutlier(t *testing.T) {
 	rnd := rand.New(rand.NewSource(5))
 	rows := cluster(rnd, 100, []float64{0, 0}, 1)

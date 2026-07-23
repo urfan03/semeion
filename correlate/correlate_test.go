@@ -14,8 +14,6 @@ func sym(job string, offset time.Duration, score float64, ents map[string]string
 	return Symptom{Job: job, Time: t0.Add(offset), Detector: "mean(latency)", Score: score, Kind: "metric", Entities: ents}
 }
 
-// The canonical incident: a deploy, then the service that was deployed starts
-// erroring, then a downstream service degrades.
 func TestOneIncidentAcrossSignalsWithTheDeployOnTop(t *testing.T) {
 	symptoms := []Symptom{
 		sym("checkout-errors", 2*time.Minute, 90, map[string]string{"service": "checkout"}),
@@ -41,8 +39,7 @@ func TestOneIncidentAcrossSignalsWithTheDeployOnTop(t *testing.T) {
 	if top.Change == nil || top.Change.Name != "checkout v2.3.1" {
 		t.Fatalf("the deploy should rank first, got %+v", top)
 	}
-	// Confidence is now a share of the total evidence weight: the leader must be
-	// the largest share, in (0,1], and strictly the highest of the candidates.
+
 	if top.Confidence <= 0 || top.Confidence > 1 {
 		t.Errorf("leader confidence should be a share in (0,1], got %v", top.Confidence)
 	}
@@ -59,7 +56,6 @@ func TestOneIncidentAcrossSignalsWithTheDeployOnTop(t *testing.T) {
 	}
 }
 
-// Two hosts failing hours apart are two incidents, not one.
 func TestUnrelatedSymptomsStaySeparate(t *testing.T) {
 	symptoms := []Symptom{
 		sym("cpu", 0, 90, map[string]string{"host": "web-1"}),
@@ -69,14 +65,12 @@ func TestUnrelatedSymptomsStaySeparate(t *testing.T) {
 	if len(inc) != 2 {
 		t.Fatalf("expected 2 incidents, got %d", len(inc))
 	}
-	// Newest first.
+
 	if !inc[0].Start.After(inc[1].Start) {
 		t.Error("incidents should be ordered newest first")
 	}
 }
 
-// Same job, same moment, different entities: two independent problems. Without
-// this rule one noisy job would swallow every host into a single "incident".
 func TestSameJobDifferentEntitiesAreNotLinked(t *testing.T) {
 	symptoms := []Symptom{
 		sym("disk", 0, 90, map[string]string{"host": "web-1"}),
@@ -88,8 +82,6 @@ func TestSameJobDifferentEntitiesAreNotLinked(t *testing.T) {
 	}
 }
 
-// Different signals at the same moment are linked even without a shared entity —
-// simultaneous degradation across services usually has one upstream cause.
 func TestCrossSignalCoOccurrenceLinks(t *testing.T) {
 	symptoms := []Symptom{
 		sym("db-latency", 0, 90, map[string]string{"cluster": "db-main"}),
@@ -99,7 +91,7 @@ func TestCrossSignalCoOccurrenceLinks(t *testing.T) {
 	if len(inc) != 1 {
 		t.Fatalf("expected the co-occurrence to link them, got %d incidents", len(inc))
 	}
-	// …but not when they are far apart within the window.
+
 	far := []Symptom{
 		sym("db-latency", 0, 90, map[string]string{"cluster": "db-main"}),
 		sym("api-errors", 8*time.Minute, 85, map[string]string{"service": "api"}),
@@ -109,8 +101,6 @@ func TestCrossSignalCoOccurrenceLinks(t *testing.T) {
 	}
 }
 
-// A shared entity links symptoms across the full window even when the signals
-// are unrelated in every other way.
 func TestSharedEntityLinksAcrossTheFullWindow(t *testing.T) {
 	symptoms := []Symptom{
 		sym("cpu", 0, 90, map[string]string{"host": "web-1"}),
@@ -130,8 +120,7 @@ func TestEarliestSymptomLeadsWithoutAChange(t *testing.T) {
 	if len(inc) != 1 {
 		t.Fatalf("expected one incident, got %d", len(inc))
 	}
-	// Earliness outweighs severity: the later record scores higher but is an
-	// effect, not a cause.
+
 	if inc[0].RootCause[0].Symptom.Job != "db-saturation" {
 		t.Fatalf("the earliest symptom should lead, got %+v", inc[0].RootCause[0].Symptom)
 	}
@@ -171,14 +160,12 @@ func TestEmptyInput(t *testing.T) {
 	}
 }
 
-// A deploy with no nearby symptoms is a change, not an incident.
 func TestLoneChangeIsNotAnIncident(t *testing.T) {
 	changes := []Change{{Time: t0, Name: "svc v1", Kind: "deploy", Labels: map[string]string{"service": "svc"}}}
 	if inc := Correlate(nil, changes, Options{Window: 10 * time.Minute}); len(inc) != 0 {
 		t.Fatalf("a lone change must not surface as an incident, got %+v", inc)
 	}
 
-	// But a symptom clustered with the change still forms one, keeping the change.
 	syms := []Symptom{sym("errors", 2*time.Minute, 90, map[string]string{"service": "svc"})}
 	inc := Correlate(syms, changes, Options{Window: 10 * time.Minute})
 	if len(inc) != 1 || len(inc[0].Changes) != 1 {

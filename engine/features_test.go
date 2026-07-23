@@ -9,8 +9,6 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// Population: five peers behave alike; one becomes an outlier and is flagged,
-// attributed to that entity via an influencer.
 func TestPopulationOutlier(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	hosts := []string{"h1", "h2", "h3", "h4", "h5"}
@@ -19,7 +17,7 @@ func TestPopulationOutlier(t *testing.T) {
 		v := 100 + 2*math.Sin(float64(i))
 		for _, h := range hosts {
 			val := v
-			if i == 35 && h == "h5" { // h5 goes wild, once, past warm-up
+			if i == 35 && h == "h5" {
 				val = 1000
 			}
 			pts = append(pts, core.DataPoint{
@@ -51,8 +49,6 @@ func TestPopulationOutlier(t *testing.T) {
 	}
 }
 
-// Rare: a status value that appears once (after warm-up) is flagged; the common
-// value is not.
 func TestRareValue(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
@@ -62,7 +58,7 @@ func TestRareValue(t *testing.T) {
 			Fields: map[string]string{"status": "200"},
 		})
 	}
-	pts = append(pts, core.DataPoint{ // one rare 500, well past warm-up
+	pts = append(pts, core.DataPoint{
 		Time: start.Add(28 * time.Minute), Fields: map[string]string{"status": "500"}})
 
 	job := jobspec.Job{Name: "rare", BucketSpan: time.Minute,
@@ -89,14 +85,12 @@ func TestRareValue(t *testing.T) {
 	}
 }
 
-// Multi-bucket: a sustained mild shift (each bucket only ~2σ, below threshold)
-// is caught by the multi-bucket signal, tagged "multi_bucket".
 func TestMultiBucketSustainedShift(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for i := 0; i < 60; i++ {
 		v := 100 + 5*math.Sin(float64(i))
-		if i >= 35 && i < 52 { // a sustained ~+12 shift for 17 buckets
+		if i >= 35 && i < 52 {
 			v += 12
 		}
 		pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute), Value: v})
@@ -119,18 +113,16 @@ func TestMultiBucketSustainedShift(t *testing.T) {
 	}
 }
 
-// Renormalization pulls a moderate anomaly's score down relative to a much
-// larger one seen in the same run.
 func TestRenormalization(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for i := 0; i < 60; i++ {
 		v := 100.0
 		if i == 40 {
-			v = 160 // moderate spike (scores ~75 on its own)
+			v = 160
 		}
 		if i == 50 {
-			v = 100000 // enormous spike
+			v = 100000
 		}
 		pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute), Value: v})
 	}
@@ -160,9 +152,6 @@ func TestRenormalization(t *testing.T) {
 	}
 }
 
-// Multivariate: three metrics normally move together. A correlated joint move
-// is NOT flagged, but a broken correlation (one up while another goes down) IS —
-// even though each metric stays within its own range.
 func TestMultivariateRelationshipBreak(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	common := func(i int) float64 { return 100 + 15*math.Sin(float64(i)*0.3) }
@@ -175,9 +164,9 @@ func TestMultivariateRelationshipBreak(t *testing.T) {
 		v := common(i)
 		pts = append(pts, mk(i, v+2*math.Sin(float64(i)*1.1), v+2*math.Sin(float64(i)*1.7), v+2*math.Sin(float64(i)*2.3)))
 	}
-	// bucket 60: a big CORRELATED move (all together) — should NOT fire.
+
 	pts = append(pts, mk(60, common(60)+15, common(60)+15, common(60)+15))
-	// bucket 61: a RELATIONSHIP BREAK (cpu up, mem down) — should fire.
+
 	pts = append(pts, mk(61, common(61)+25, common(61)-25, common(61)))
 
 	job := jobspec.Job{Name: "mv", BucketSpan: time.Minute,
@@ -209,19 +198,17 @@ func TestMultivariateRelationshipBreak(t *testing.T) {
 	}
 }
 
-// info_content: entropy of a by_field's value distribution spikes when the set
-// of distinct values fans out.
 func TestInfoContentEntropySpike(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
-	// buckets 0..30: every event is the same user → entropy 0.
+
 	for i := 0; i < 31; i++ {
 		for k := 0; k < 3; k++ {
 			pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute),
 				Fields: map[string]string{"user": "u1"}})
 		}
 	}
-	// bucket 31: 50 distinct users → high entropy.
+
 	for k := 0; k < 50; k++ {
 		pts = append(pts, core.DataPoint{Time: start.Add(31 * time.Minute),
 			Fields: map[string]string{"user": "u" + itoa(k)}})
@@ -244,12 +231,10 @@ func TestInfoContentEntropySpike(t *testing.T) {
 	}
 }
 
-// time_of_day: a burst at an hour whose baseline count is low fires; the same
-// hour's normal count does not.
 func TestTimeOfDayBurst(t *testing.T) {
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // midnight UTC
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
-	// 10 days; business hours 8..18 get 3 events each. Establishes per-hour norm.
+
 	for d := 0; d < 10; d++ {
 		for h := 8; h <= 18; h++ {
 			for k := 0; k < 3; k++ {
@@ -258,7 +243,7 @@ func TestTimeOfDayBurst(t *testing.T) {
 			}
 		}
 	}
-	// Day 10, hour 10: a burst of 40.
+
 	burst := start.Add(time.Duration(10*24+10) * time.Hour)
 	for k := 0; k < 40; k++ {
 		pts = append(pts, core.DataPoint{Time: burst})
@@ -284,7 +269,6 @@ func TestTimeOfDayBurst(t *testing.T) {
 	}
 }
 
-// A distribution-based detector still catches a clear spike (and sets a family).
 func TestDistributionDetector(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
@@ -316,7 +300,6 @@ func itoa(n int) string {
 	return string(b)
 }
 
-// spikeSeries: 40 one-minute buckets at ~100, with a single spike at bucket 35.
 func spikeSeries(start time.Time) []core.DataPoint {
 	var pts []core.DataPoint
 	for i := 0; i < 40; i++ {
@@ -338,8 +321,6 @@ func anyRecord(results []core.BucketResult) bool {
 	return false
 }
 
-// A calendar window over the spike bucket suppresses the anomaly; without it,
-// the spike fires.
 func TestCalendarSuppression(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	pts := spikeSeries(start)
@@ -358,7 +339,6 @@ func TestCalendarSuppression(t *testing.T) {
 	}
 }
 
-// A rule that skips anomalies whose actual is above a bound suppresses the spike.
 func TestRuleSuppression(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	pts := spikeSeries(start)
@@ -372,7 +352,6 @@ func TestRuleSuppression(t *testing.T) {
 	}
 }
 
-// A partition detector attaches the partition value as an influencer.
 func TestInfluencersOnPartition(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint

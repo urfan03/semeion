@@ -6,28 +6,14 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// Influencer-level aggregation is the "who is responsible" view across a whole
-// analysis window (Elastic ML's Influencers tab): instead of per-bucket records,
-// it rolls every record's dimension attributions up into a ranked list of the
-// entities (host, user, service, country, …) that carried the most anomalous
-// mass — so an operator sees "host db-3 accounts for most of today's anomalies"
-// at a glance.
-
-// InfluencerScore is one aggregated (field, value) attribution over a set of
-// results.
 type InfluencerScore struct {
 	Field    string  `json:"field"`
 	Value    string  `json:"value"`
-	Records  int     `json:"records"`   // records this value was attributed to
-	MaxScore float64 `json:"max_score"` // the single most anomalous record it touched
-	Total    float64 `json:"total"`     // summed contribution (record score × attribution share)
+	Records  int     `json:"records"`
+	MaxScore float64 `json:"max_score"`
+	Total    float64 `json:"total"`
 }
 
-// RankInfluencers aggregates every record's influencers across the results and
-// ranks them by total contribution. A record's contribution to an influencer is
-// its anomaly score weighted by that influencer's attribution share (falling back
-// to the full score when no share was computed). Optionally filter to a single
-// field (e.g. only "host") by passing a non-empty field.
 func RankInfluencers(results []core.BucketResult, field string) []InfluencerScore {
 	type key struct{ f, v string }
 	agg := map[key]*InfluencerScore{}

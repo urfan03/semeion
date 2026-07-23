@@ -11,12 +11,8 @@ import (
 	"github.com/urfan03/semeion/slo"
 )
 
-// maxSLOSamples bounds a named SLO's rolling sample ring. A long objective window
-// with fine buckets could otherwise grow without limit.
 const maxSLOSamples = 200_000
 
-// sloSeries is a named error-budget series: its target plus a rolling window of
-// good/total samples that callers append to over time.
 type sloSeries struct {
 	mu      sync.Mutex
 	Target  slo.Target
@@ -29,8 +25,6 @@ func (s *sloSeries) append(samples []slo.Sample) {
 	s.samples = append(s.samples, samples...)
 	sort.Slice(s.samples, func(i, j int) bool { return s.samples[i].Time.Before(s.samples[j].Time) })
 
-	// Trim to the objective window (plus a small margin so burn windows at the
-	// edge still see their data), then to the hard cap.
 	if s.Target.Window > 0 && len(s.samples) > 0 {
 		cutoff := s.samples[len(s.samples)-1].Time.Add(-2 * s.Target.Window)
 		i := 0
@@ -56,13 +50,6 @@ func (s *sloSeries) evaluate(now time.Time) slo.Report {
 	return slo.Evaluate(s.Target, s.samples, now)
 }
 
-// handleSLO serves both the stateless ad-hoc evaluator and the named-SLO store,
-// depending on the path:
-//
-//	POST /v1/slo            — evaluate posted samples, keep nothing (ad-hoc)
-//	GET  /v1/slo            — list named SLOs with their current state
-//	POST /v1/slo/{name}     — append samples (and set target), return the report
-//	GET  /v1/slo/{name}     — the named SLO's current report
 func (s *Server) handleSLO(w http.ResponseWriter, r *http.Request) {
 	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/slo"), "/")
 
@@ -189,8 +176,6 @@ func readSLO(r *http.Request) (sloRequest, error) {
 	return req, nil
 }
 
-// clockFor resolves the evaluation instant: an explicit `now`, else the freshest
-// sample (so a historical batch reports on itself), else wall-clock now.
 func clockFor(req sloRequest) time.Time {
 	if req.Now != nil {
 		return *req.Now
@@ -201,8 +186,6 @@ func clockFor(req sloRequest) time.Time {
 	return time.Now().UTC()
 }
 
-// clockOrZero returns an explicit `now` if given, else zero — letting the series
-// pick the freshest of its whole ring, not just this batch.
 func clockOrZero(req sloRequest) time.Time {
 	if req.Now != nil {
 		return *req.Now

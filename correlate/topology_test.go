@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// fakeTopo is a hand-written dependency graph: gateway → checkout → payments-db.
 type fakeTopo struct{ edges map[string]string }
 
 func newTopo() fakeTopo {
@@ -43,8 +42,6 @@ func svcSym(job, service string, offset time.Duration, score float64) Symptom {
 		Kind: "metric", Entities: map[string]string{"service": service}}
 }
 
-// The database is the cause even though it was noticed last and scores lowest:
-// the other two services depend on it, and nothing depends on them.
 func TestTopologyBeatsEarlinessWhenTheEvidenceIsStrong(t *testing.T) {
 	symptoms := []Symptom{
 		svcSym("gateway-latency", "gateway", 0, 95),
@@ -65,20 +62,17 @@ func TestTopologyBeatsEarlinessWhenTheEvidenceIsStrong(t *testing.T) {
 		t.Errorf("the reason must name the topological evidence: %v", top.Reasons)
 	}
 
-	// Same data without the graph: earliness wins and the answer is the leaf.
 	if noTopo := Correlate(symptoms, nil, Options{Window: 10 * time.Minute}); noTopo[0].RootCause[0].Symptom.Entities["service"] != "gateway" {
 		t.Fatalf("without topology the earliest symptom should lead, got %+v", noTopo[0].RootCause[0].Symptom)
 	}
 }
 
-// A caller and its callee are one incident even when they are far apart in the
-// window and share no entity — that is the shape of a cascade.
 func TestTopologyLinksAcrossTheWindow(t *testing.T) {
 	symptoms := []Symptom{
 		svcSym("checkout-errors", "checkout", 0, 90),
 		svcSym("db-latency", "payments-db", 9*time.Minute, 80),
 	}
-	// Beyond the co-occurrence window (5m), so only the graph can link them.
+
 	if inc := Correlate(symptoms, nil, Options{Window: 10 * time.Minute}); len(inc) != 2 {
 		t.Fatalf("without a graph these are two incidents, got %d", len(inc))
 	}
@@ -91,7 +85,6 @@ func TestTopologyLinksAcrossTheWindow(t *testing.T) {
 	}
 }
 
-// Unrelated services still must not be merged just because a graph exists.
 func TestTopologyDoesNotLinkUnrelatedServices(t *testing.T) {
 	symptoms := []Symptom{
 		svcSym("a", "gateway", 0, 90),
@@ -102,8 +95,6 @@ func TestTopologyDoesNotLinkUnrelatedServices(t *testing.T) {
 	}
 }
 
-// A deploy on the upstream service should still win over the upstream symptom
-// itself — the change is the thing a human can revert.
 func TestChangeStillOutranksTopologyEvidence(t *testing.T) {
 	symptoms := []Symptom{
 		svcSym("checkout-errors", "checkout", time.Minute, 90),
@@ -132,18 +123,15 @@ func TestCustomEntityKey(t *testing.T) {
 	}
 }
 
-// P1-L2 regression: a coarse influencer shared by every symptom (env=prod) must
-// NOT collapse unrelated symptoms into one mega-incident.
 func TestCoarseInfluencerDoesNotMergeEverything(t *testing.T) {
 	var syms []Symptom
-	// 8 unrelated hosts, each its own symptom, all tagged env=prod, spread out
-	// beyond the co-occurrence window so only a shared entity could link them.
+
 	for i := 0; i < 8; i++ {
 		syms = append(syms, Symptom{
 			Job: "cpu", Time: t0.Add(time.Duration(i) * 20 * time.Minute), Score: 80,
 			Entities: map[string]string{
-				"host": string(rune('a' + i)), // distinct identity
-				"env":  "prod",                // coarse attribute shared by all
+				"host": string(rune('a' + i)),
+				"env":  "prod",
 			},
 		})
 	}

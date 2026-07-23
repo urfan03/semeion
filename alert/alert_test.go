@@ -26,7 +26,6 @@ func bucket(recs ...core.Record) core.BucketResult {
 	return core.BucketResult{Records: recs}
 }
 
-// captureSink records what it was sent, without any HTTP.
 type captureSink struct {
 	mu   sync.Mutex
 	got  []Alert
@@ -72,9 +71,9 @@ func TestNotifierDedupPerSeries(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	results := []core.BucketResult{
 		bucket(rec(t0, "web-1", 90)),
-		bucket(rec(t0.Add(5*time.Minute), "web-1", 95)),  // inside the window → suppressed
-		bucket(rec(t0.Add(5*time.Minute), "web-2", 95)),  // different series → sent
-		bucket(rec(t0.Add(40*time.Minute), "web-1", 95)), // window elapsed → sent again
+		bucket(rec(t0.Add(5*time.Minute), "web-1", 95)),
+		bucket(rec(t0.Add(5*time.Minute), "web-2", 95)),
+		bucket(rec(t0.Add(40*time.Minute), "web-1", 95)),
 	}
 	sent, err := n.Notify(context.Background(), "job", results)
 	if err != nil {
@@ -202,9 +201,8 @@ func TestStdoutSink(t *testing.T) {
 	}
 }
 
-// P2a regression: a webhook/Slack transport error must not leak the secret URL.
 func TestSinkErrorRedactsSecretURL(t *testing.T) {
-	// Nothing listens here, so Do() fails with a transport error carrying the URL.
+
 	secret := "https://hooks.slack.com/services/T00/B00/XXXSECRETXXX"
 	s := &SlackSink{WebhookURL: secret}
 	err := s.Send(context.Background(), Alert{Job: "j", Score: 90})

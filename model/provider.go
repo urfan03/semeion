@@ -1,11 +1,3 @@
-// Package model provides the heavy, non-streaming model math that the streaming
-// engine calls periodically (not per point): seasonality discovery, seasonal
-// decomposition, forecasting and change-point detection.
-//
-// Provider is an interface so the implementation can be swapped. The default is
-// GoProvider — pure Go, zero dependencies, always in the single binary. An
-// optional Python sidecar (statsmodels / scipy / ruptures) can implement the
-// same interface over gRPC for research-grade models; see the `python/` dir.
 package model
 
 import (
@@ -13,35 +5,28 @@ import (
 	"sort"
 )
 
-// Decomposition splits a series into additive components: series ≈ trend +
-// seasonal + resid.
 type Decomposition struct {
 	Trend    []float64
 	Seasonal []float64
 	Resid    []float64
 }
 
-// Provider computes the heavy models. All methods are pure (no state, no I/O),
-// so they are trivially swappable and testable.
 type Provider interface {
-	// DetectSeasonality returns the dominant period(s) in samples (nil if none).
 	DetectSeasonality(series []float64) []int
-	// Decompose splits the series at the given period (additive).
+
 	Decompose(series []float64, period int) Decomposition
-	// Forecast projects the series horizon steps ahead.
+
 	Forecast(series []float64, horizon int) []float64
-	// ForecastBands is Forecast with a prediction interval per step.
+
 	ForecastBands(series []float64, horizon int) []Band
-	// ChangePoints returns indices where the series' mean level shifts.
+
 	ChangePoints(series []float64) []int
-	// FitDistribution selects the best-fit distribution for the samples.
+
 	FitDistribution(samples []float64) Distribution
 }
 
-// GoProvider is the pure-Go, dependency-free implementation.
 type GoProvider struct{}
 
-// NewGoProvider returns the default provider.
 func NewGoProvider() *GoProvider { return &GoProvider{} }
 
 func (GoProvider) DetectSeasonality(series []float64) []int       { return detectSeasonality(series) }
@@ -51,18 +36,12 @@ func (GoProvider) ForecastBands(s []float64, h int) []Band        { return forec
 func (GoProvider) ChangePoints(s []float64) []int                 { return changePoints(s) }
 func (GoProvider) FitDistribution(samples []float64) Distribution { return fitDistribution(samples) }
 
-// ── Seasonality: autocorrelation, first prominent peak ───────────────────────
-
 func detectSeasonality(raw []float64) []int {
 	n := len(raw)
 	if n < 8 {
 		return nil
 	}
-	// Detrend first: the autocorrelation of a trending series stays high and
-	// slowly descending, which masks the seasonal peak (a sine + strong trend
-	// would otherwise report NO period). Removing the linear fit exposes the
-	// cyclic component. A pure step/level is left mostly intact, which is fine —
-	// seasonality is judged on the oscillation around the trend.
+
 	x := detrend(raw)
 	mean := meanOf(x)
 	var den float64
@@ -75,7 +54,7 @@ func detectSeasonality(raw []float64) []int {
 	}
 	maxLag := n / 2
 	if maxLag > 1440 {
-		maxLag = 1440 // cap (a day of minutes) — enough for common periods
+		maxLag = 1440
 	}
 	acf := make([]float64, maxLag+1)
 	for lag := 1; lag <= maxLag; lag++ {
@@ -85,10 +64,7 @@ func detectSeasonality(raw []float64) []int {
 		}
 		acf[lag] = num / den
 	}
-	// Collect the prominent local maxima (lag ≥ 2), ascending. The ACF of a
-	// signal with nested cycles (e.g. daily AND weekly) peaks at each period and
-	// its harmonics; returning them all lets the caller pick — a longer period
-	// whose phases subsume the shorter cycle captures BOTH seasonalities.
+
 	var peaks []int
 	for lag := 2; lag < maxLag; lag++ {
 		if acf[lag] >= 0.3 && acf[lag] > acf[lag-1] && acf[lag] >= acf[lag+1] {
@@ -101,8 +77,6 @@ func detectSeasonality(raw []float64) []int {
 	return peaks
 }
 
-// ── Additive decomposition ───────────────────────────────────────────────────
-
 func decompose(x []float64, period int) Decomposition {
 	n := len(x)
 	d := Decomposition{Trend: make([]float64, n), Seasonal: make([]float64, n), Resid: make([]float64, n)}
@@ -111,7 +85,7 @@ func decompose(x []float64, period int) Decomposition {
 		return d
 	}
 	trend := movingAverage(x, period)
-	// seasonal = mean of (x - trend) per phase, centred to zero mean.
+
 	phaseSum := make([]float64, period)
 	phaseCnt := make([]int, period)
 	for i := 0; i < n; i++ {
@@ -137,7 +111,6 @@ func decompose(x []float64, period int) Decomposition {
 	return d
 }
 
-// movingAverage is a centred moving average of window w; edge windows shrink.
 func movingAverage(x []float64, w int) []float64 {
 	n := len(x)
 	out := make([]float64, n)
@@ -159,8 +132,6 @@ func movingAverage(x []float64, w int) []float64 {
 	return out
 }
 
-// ── Forecast: seasonal-naïve + linear trend ──────────────────────────────────
-
 func forecast(x []float64, horizon int) []float64 {
 	out := make([]float64, horizon)
 	n := len(x)
@@ -170,8 +141,7 @@ func forecast(x []float64, horizon int) []float64 {
 	if periods := detectSeasonality(x); len(periods) > 0 {
 		p := periods[0]
 		d := decompose(x, p)
-		// Anchor on the fitted trend LINE (robust to edge bias of the last MA
-		// point) + the seasonal component for the future phase.
+
 		slope, intercept := linFit(d.Trend)
 		for h := 0; h < horizon; h++ {
 			j := n + h
@@ -186,55 +156,35 @@ func forecast(x []float64, horizon int) []float64 {
 	return out
 }
 
-// Band is a forecast point with a prediction interval.
 type Band struct {
 	Point float64 `json:"point"`
 	Lower float64 `json:"lower"`
 	Upper float64 `json:"upper"`
 }
 
-// forecastBands wraps the point forecast with a 95% prediction interval derived
-// from the in-sample residual spread, widened with the horizon (uncertainty
-// grows the further out you project). This is the headline Elastic ML forecast
-// output — a point value alone is not actionable.
 func forecastBands(x []float64, horizon int) []Band {
 	pts := forecast(x, horizon)
 	bands := make([]Band, len(pts))
 	sd := residualStd(x)
-	const z = 1.96 // ~95%
+	const z = 1.96
 	for h := range pts {
-		// Widen ∝ √(1 + h/n): the one-step interval grows toward a random-walk
-		// band as the horizon extends.
+
 		w := z * sd * math.Sqrt(1+float64(h)/math.Max(1, float64(len(x))))
 		bands[h] = Band{Point: pts[h], Lower: pts[h] - w, Upper: pts[h] + w}
 	}
 	return bands
 }
 
-// Breach is the result of a predictive threshold/SLO check over a forecast: does
-// the projection cross a limit within the horizon, and when. It turns a forecast
-// into an actionable early warning ("error rate will exceed 5% in ~40 min").
 type Breach struct {
-	WillBreach bool `json:"will_breach"` // point forecast crosses the threshold within the horizon
-	// Step is 1-based buckets ahead of the breach (the first step the point
-	// forecast crosses). 0 when the point never crosses (Probability then carries
-	// the peak band-edge risk as an early warning).
+	WillBreach bool `json:"will_breach"`
+
 	Step        int     `json:"step"`
-	At          float64 `json:"at"`          // forecast point value at Step (or the last step when Step==0)
-	Threshold   float64 `json:"threshold"`   // the limit tested
-	Side        string  `json:"side"`        // "high" (upper limit) or "low" (lower limit)
-	Probability float64 `json:"probability"` // P(true value beyond the threshold) at that step, from the band
+	At          float64 `json:"at"`
+	Threshold   float64 `json:"threshold"`
+	Side        string  `json:"side"`
+	Probability float64 `json:"probability"`
 }
 
-// ForecastBreach evaluates a forecast (its prediction bands) against a threshold.
-// side high tests an UPPER limit (breach when the value rises to/above it —
-// error rate, latency, saturation); side low tests a LOWER limit (breach when the
-// value falls to/below it — success rate, free disk, throughput). It reports the
-// first step whose point forecast crosses the threshold, with the probability the
-// true value has crossed there (derived from the band width, treated as a 95%
-// Gaussian interval). When the point never crosses, WillBreach is false but
-// Probability still carries the peak band-edge risk over the horizon — an early
-// warning before the expected value itself breaches.
 func ForecastBreach(bands []Band, threshold float64, high bool) Breach {
 	b := Breach{Threshold: threshold, Side: "low"}
 	if high {
@@ -268,20 +218,16 @@ func ForecastBreach(bands []Band, threshold float64, high bool) Breach {
 			peakProb, peakAt = p, bd.Point
 		}
 	}
-	// No point crossing — surface the peak band-edge risk as an early warning.
+
 	b.Probability = peakProb
 	b.At = peakAt
 	return b
 }
 
-// normUpperTail returns P(Z ≥ z) for a standard normal — the upper-tail
-// probability used to turn a forecast band into a breach probability.
 func normUpperTail(z float64) float64 {
 	return 0.5 * math.Erfc(z/math.Sqrt2)
 }
 
-// residualStd is the std of the series' residuals after removing trend (and
-// seasonality when present) — the noise the forecast can't explain.
 func residualStd(x []float64) float64 {
 	if len(x) < 3 {
 		return 0
@@ -300,7 +246,6 @@ func residualStd(x []float64) float64 {
 	return sd
 }
 
-// linFit is the least-squares line (slope, intercept) of y over its index.
 func linFit(y []float64) (slope, intercept float64) {
 	n := len(y)
 	if n < 2 {
@@ -326,13 +271,6 @@ func linFit(y []float64) (slope, intercept float64) {
 	intercept = (sy - slope*sx) / fn
 	return slope, intercept
 }
-
-// ── Change points: mean-shift binary segmentation ───────────────────────────
-//
-// For each segment we find the split that best separates two means (a t-like
-// statistic); if it clears the threshold we record it and recurse on both
-// halves. This localises a step change at its true position, unlike a global
-// CUSUM which also fires inside a stable regime.
 
 const (
 	cpMinSeg    = 5
@@ -360,21 +298,15 @@ func changePoints(x []float64) []int {
 	return out
 }
 
-// bestSplit finds the split that best models sub as two constant levels, and
-// scores it by how much better that two-level model fits than a single LINEAR
-// trend. Scoring against a trend (not against a flat mean) is what stops a
-// smooth ramp from being reported as a staircase of steps: a ramp is explained
-// by the line (so the two-level model wins nothing), while a genuine level shift
-// is not (a line can't fit a step). Offset k means left=sub[:k], right=sub[k:].
 func bestSplit(sub []float64) (int, float64) {
 	n := len(sub)
 	if n < 2*cpMinSeg {
 		return -1, 0
 	}
-	// Residual SSE of the single-line (trend) model — the null hypothesis.
+
 	sseLine := sseLinear(sub)
 	if sseLine <= 0 {
-		return -1, 0 // a perfect line: nothing to explain with a step
+		return -1, 0
 	}
 	prefix := make([]float64, n+1)
 	sqPrefix := make([]float64, n+1)
@@ -382,7 +314,7 @@ func bestSplit(sub []float64) (int, float64) {
 		prefix[i+1] = prefix[i] + v
 		sqPrefix[i+1] = sqPrefix[i] + v*v
 	}
-	// SSE of a two-constant model split at k, via prefix sums.
+
 	sseSplit := func(k int) float64 {
 		sumL, sumR := prefix[k], prefix[n]-prefix[k]
 		sqL, sqR := sqPrefix[k], sqPrefix[n]-sqPrefix[k]
@@ -397,13 +329,11 @@ func bestSplit(sub []float64) (int, float64) {
 	if bestK < 0 {
 		return -1, 0
 	}
-	// F-like statistic: how much the two-level model reduces residual error
-	// relative to the trend model. Large only for a real step.
+
 	score := (sseLine - bestSSE) / (bestSSE/float64(n-2) + 1e-9)
 	return bestK, score
 }
 
-// detrend subtracts the global least-squares linear fit from x.
 func detrend(x []float64) []float64 {
 	if len(x) < 3 {
 		return append([]float64(nil), x...)
@@ -416,7 +346,6 @@ func detrend(x []float64) []float64 {
 	return res
 }
 
-// sseLinear returns the residual sum of squares of the least-squares line fit.
 func sseLinear(y []float64) float64 {
 	slope, intercept := linFit(y)
 	var sse float64
@@ -426,8 +355,6 @@ func sseLinear(y []float64) float64 {
 	}
 	return sse
 }
-
-// ── helpers ──────────────────────────────────────────────────────────────────
 
 func meanOf(x []float64) float64 {
 	if len(x) == 0 {

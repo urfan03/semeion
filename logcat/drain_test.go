@@ -2,10 +2,6 @@ package logcat
 
 import "testing"
 
-// Structurally identical messages (differing only in a variable past the tree's
-// prefix depth) collapse to one template with the varying position wildcarded.
-// (Drain routes by the leading tokens, so — like real logs — the constant part
-// leads and variables come later.)
 func TestDrainGroupsSimilar(t *testing.T) {
 	d := NewDrain()
 	d.Match("task completed successfully in worker alice")
@@ -23,7 +19,6 @@ func TestDrainGroupsSimilar(t *testing.T) {
 	}
 }
 
-// Different message shapes produce distinct templates; numbers/IPs are masked.
 func TestDrainDistinctAndMasking(t *testing.T) {
 	d := NewDrain()
 	d.Match("connection accepted from 10.0.0.1 port 5432")
@@ -33,14 +28,13 @@ func TestDrainDistinctAndMasking(t *testing.T) {
 	if got := len(d.Clusters()); got != 2 {
 		t.Fatalf("expected 2 templates, got %d: %v", got, templates(d))
 	}
-	// The IP + port varied → wildcards; the static words remain.
+
 	conn := d.Match("connection accepted from 172.16.0.4 port 22")
 	if conn.Template() != "connection accepted from <*> port <*>" {
 		t.Fatalf("masked template: got %q", conn.Template())
 	}
 }
 
-// A restored Drain keeps its templates and matches new messages to them.
 func TestDrainStateRoundTrip(t *testing.T) {
 	d := NewDrain()
 	d.Match("job 12 finished in 3 s")
@@ -54,7 +48,7 @@ func TestDrainStateRoundTrip(t *testing.T) {
 	if len(d2.Clusters()) != 1 {
 		t.Fatalf("restored clusters: got %d", len(d2.Clusters()))
 	}
-	// Matching a same-shape message must reuse the restored cluster (no new ID).
+
 	c := d2.Match("job 77 finished in 1 s")
 	if len(d2.Clusters()) != 1 {
 		t.Fatalf("expected reuse, got %d clusters", len(d2.Clusters()))

@@ -2,15 +2,13 @@ package model
 
 import "testing"
 
-// #6: a series with a clear sustained level shift is split into two regimes and
-// flagged as a genuine regime shift with high probability.
 func TestRegimeShiftOnStep(t *testing.T) {
 	var s []float64
 	for i := 0; i < 60; i++ {
-		s = append(s, 100+float64(i%3)) // ~100
+		s = append(s, 100+float64(i%3))
 	}
 	for i := 0; i < 60; i++ {
-		s = append(s, 160+float64(i%3)) // stepped up to ~160
+		s = append(s, 160+float64(i%3))
 	}
 	regs := Regimes(s)
 	if len(regs) < 2 {
@@ -25,7 +23,6 @@ func TestRegimeShiftOnStep(t *testing.T) {
 	}
 }
 
-// #6: a stationary series is one regime with no shift.
 func TestRegimeNoShiftOnStationary(t *testing.T) {
 	var s []float64
 	for i := 0; i < 120; i++ {

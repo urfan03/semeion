@@ -8,15 +8,10 @@ import (
 	"time"
 )
 
-// handleMetrics exposes semeion's own operational metrics in the Prometheus text
-// exposition format — hand-written, so the binary keeps zero dependencies. This
-// is semeion watching itself: how many live jobs, open incidents, and how each
-// error budget is burning, scrapeable by the same Prometheus it can read from.
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	var b strings.Builder
 	m := &promWriter{b: &b}
 
-	// Live jobs, split by kind.
 	s.mu.RLock()
 	metricJobs, logJobs, points := 0, 0, 0
 	jobPoints := map[string]int{}
@@ -52,7 +47,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	m.gauge("semeion_changes", "Recorded deploy/config changes in the log.", float64(changes))
 	m.gauge("semeion_alerts_sent_total", "Alerts delivered to sinks since start.", float64(s.alertsSent.Load()))
 
-	// Incidents.
 	open := s.tracker.Open()
 	crit := 0
 	for _, o := range open {
@@ -64,7 +58,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	m.gauge("semeion_incidents_open_critical", "Open incidents in the critical band.", float64(crit))
 	m.gauge("semeion_incidents_resolved", "Recently resolved incidents retained.", float64(len(s.tracker.Resolved())))
 
-	// Topology.
 	nodes, edges := s.graph.Nodes(), s.graph.Edges()
 	edgeErrors := 0
 	for _, e := range edges {
@@ -74,7 +67,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	m.gauge("semeion_topology_edges", "Directed call edges in the dependency graph.", float64(len(edges)))
 	m.gauge("semeion_topology_edge_errors", "Errored calls summed across edges.", float64(edgeErrors))
 
-	// Per-SLO budget state.
 	now := time.Now().UTC()
 	m.help("semeion_slo_sli", "Observed SLI per named SLO.", "gauge")
 	m.help("semeion_slo_budget_consumed", "Error-budget fraction consumed (>1 = blown).", "gauge")
@@ -95,10 +87,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(b.String()))
 }
 
-// version is the reported build version (overridable at link time via -ldflags).
 var version = "dev"
-
-// ── minimal Prometheus text writer ───────────────────────────────────────────
 
 type label struct{ name, value string }
 
@@ -109,7 +98,6 @@ type promWriter struct {
 	seen map[string]bool
 }
 
-// help emits the HELP/TYPE header once per metric name.
 func (w *promWriter) help(name, help, typ string) {
 	if w.seen == nil {
 		w.seen = map[string]bool{}
@@ -121,13 +109,11 @@ func (w *promWriter) help(name, help, typ string) {
 	fmt.Fprintf(w.b, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
 }
 
-// gauge emits a single-sample gauge (header + line).
 func (w *promWriter) gauge(name, help string, v float64, labels ...label) {
 	w.help(name, help, "gauge")
 	w.line(name, v, labels...)
 }
 
-// line emits one sample; call help() first for a metric with multiple lines.
 func (w *promWriter) line(name string, v float64, labels ...label) {
 	w.b.WriteString(name)
 	if len(labels) > 0 {

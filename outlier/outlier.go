@@ -1,26 +1,3 @@
-// Package outlier implements batch outlier detection over a table of features —
-// the equivalent of Elastic's Data Frame Analytics *outlier detection*, free and
-// dependency-free.
-//
-// Where the engine asks "is this point unusual *for this series, now*", this
-// asks "is this row unusual *among its peers*" — the right question for a
-// snapshot: 400 hosts × (cpu, mem, io, latency), and which ones don't belong.
-//
-// Four unsupervised methods vote, exactly as Elastic's ensemble does:
-//
-//	knn      mean distance to the k nearest neighbours   (global sparsity)
-//	kth-nn   distance to the k-th nearest neighbour      (robust to a tight pair)
-//	lof      local outlier factor                        (density vs. neighbours)
-//	ldof     local distance-based outlier factor         (distance vs. neighbour spread)
-//
-// No single method is right everywhere: knn/kth-nn find globally isolated rows
-// but flag legitimately sparse regions; lof/ldof are density-relative and catch
-// a row sitting *between* two clusters. Averaging them is what makes the score
-// trustworthy without any labels.
-//
-// Every score comes with **feature influence** — how much each column
-// contributed — because "host-7 is an outlier" is useless without "…because of
-// io_wait".
 package outlier
 
 import (
@@ -29,29 +6,21 @@ import (
 	"sort"
 )
 
-// MaxRows bounds the O(n²) neighbour search. Beyond this, sample first — the
-// answer would take longer than it is worth.
 const MaxRows = 50000
 
-// Result is one row's verdict, in the input's row order.
 type Result struct {
 	Index int `json:"index"`
-	// Score in [0,1): the ensemble mean. ~0 is a normal row; >0.5 means the row
-	// sits beyond ~3 robust deviations of the population on the average method.
+
 	Score float64 `json:"score"`
-	// Methods holds each method's individual normalized score, so a verdict can
-	// be argued with ("only lof flags it → it's density, not distance").
+
 	Methods map[string]float64 `json:"methods"`
-	// Influence is each feature's share of the deviation, summing to 1.
+
 	Influence map[string]float64 `json:"influence,omitempty"`
 }
 
-// Options tune the detection. The zero value is valid and sensible.
 type Options struct {
-	// K neighbours. 0 → auto (5, clamped to the population).
 	K int
-	// Raw skips the robust per-feature standardization. Only sensible when the
-	// features are already on one comparable scale.
+
 	Raw bool
 }
 
@@ -69,8 +38,6 @@ func (o Options) k(n int) int {
 	return k
 }
 
-// Detect scores every row. features names the columns (used for influence);
-// rows must all have len(features) values.
 func Detect(features []string, rows [][]float64, opt Options) ([]Result, error) {
 	n := len(rows)
 	if n < 3 {
@@ -94,7 +61,6 @@ func Detect(features []string, rows [][]float64, opt Options) ([]Result, error) 
 
 	nbrs := neighbours(x, k)
 
-	// Raw per-method scores.
 	knn := make([]float64, n)
 	kth := make([]float64, n)
 	lof := make([]float64, n)
@@ -123,7 +89,6 @@ func Detect(features []string, rows [][]float64, opt Options) ([]Result, error) 
 	return out, nil
 }
 
-// Top returns the n highest-scoring results, most extreme first.
 func Top(res []Result, n int) []Result {
 	sorted := append([]Result(nil), res...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score > sorted[j].Score })
@@ -133,15 +98,11 @@ func Top(res []Result, n int) []Result {
 	return sorted
 }
 
-// ── neighbours ───────────────────────────────────────────────────────────────
-
 type nbr struct {
-	idx   []int     // k nearest neighbour indices, nearest first
-	dists []float64 // matching distances
+	idx   []int
+	dists []float64
 }
 
-// neighbours computes each row's k nearest neighbours. O(n²·d) time but only
-// O(n·k) memory — a full distance matrix would be gigabytes at MaxRows.
 func neighbours(x [][]float64, k int) []nbr {
 	n := len(x)
 	out := make([]nbr, n)
@@ -168,21 +129,18 @@ func neighbours(x [][]float64, k int) []nbr {
 	return out
 }
 
-// lofAll computes the local outlier factor for every row: the ratio of a row's
-// neighbours' local density to its own. ~1 means "as dense as its neighbours".
 func lofAll(x [][]float64, nbrs []nbr, out []float64) {
 	n := len(x)
-	lrd := make([]float64, n) // local reachability density
+	lrd := make([]float64, n)
 	for i := 0; i < n; i++ {
 		var sum float64
 		for t, j := range nbrs[i].idx {
-			// Reachability distance smooths the statistic: a point inside a
-			// dense neighbour's k-radius is not treated as arbitrarily close.
+
 			kdistJ := nbrs[j].dists[len(nbrs[j].dists)-1]
 			sum += math.Max(kdistJ, nbrs[i].dists[t])
 		}
 		if sum <= 0 {
-			lrd[i] = math.Inf(1) // duplicate points: infinitely dense
+			lrd[i] = math.Inf(1)
 			continue
 		}
 		lrd[i] = float64(len(nbrs[i].idx)) / sum
@@ -207,9 +165,6 @@ func lofAll(x [][]float64, nbrs []nbr, out []float64) {
 	}
 }
 
-// ldofOf is the row's mean neighbour distance divided by the mean pairwise
-// distance *within* that neighbourhood — a row far from a tight cluster scores
-// high even when the cluster itself sits in a sparse region.
 func ldofOf(x [][]float64, nb nbr) float64 {
 	k := len(nb.idx)
 	if k < 2 {
@@ -229,18 +184,6 @@ func ldofOf(x [][]float64, nb nbr) float64 {
 	return mean(nb.dists) / (inner / float64(pairs))
 }
 
-// ── scoring helpers ──────────────────────────────────────────────────────────
-
-// normalize maps raw method scores to [0,1) through a robust logistic centred at
-// 3 median-absolute-deviations: a typical row lands near 0, and 0.5 means "3
-// robust deviations above the population" — the same reading for every method,
-// which is what makes averaging them meaningful.
-//
-// The z is taken in *log* space. Every method here is a ratio or a distance:
-// strictly positive and right-skewed, so a linear robust z treats the ordinary
-// upper tail of a perfectly healthy population as extreme (measured: ~8% of a
-// clean Gaussian blob flagged). On a log scale those distributions are near
-// symmetric and only genuinely isolated rows survive.
 func normalize(raw []float64) []float64 {
 	logs := make([]float64, len(raw))
 	for i, v := range raw {
@@ -251,8 +194,7 @@ func normalize(raw []float64) []float64 {
 	med := median(raw)
 	scale := 1.4826 * medianAbsDev(raw, med)
 	if scale <= 0 {
-		// A degenerate population (identical rows): fall back to the standard
-		// deviation, and if that is zero too, nothing here is an outlier.
+
 		scale = stddev(raw)
 		if scale <= 0 {
 			return make([]float64, len(raw))
@@ -266,9 +208,6 @@ func normalize(raw []float64) []float64 {
 	return out
 }
 
-// influence decomposes the squared distance from the row to its neighbourhood
-// per feature, normalized to sum to 1. The decomposition is exact: the parts
-// add back up to the squared distance the score was built from.
 func influence(row []float64, x [][]float64, nb nbr, features []string) map[string]float64 {
 	if len(features) == 0 {
 		return nil
@@ -308,7 +247,7 @@ func standardize(rows [][]float64, d int) [][]float64 {
 			s = stddev(col)
 		}
 		if s <= 0 {
-			s = 1 // constant feature: contributes nothing either way
+			s = 1
 		}
 		centers[f], scales[f] = med, s
 	}

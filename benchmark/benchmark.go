@@ -1,7 +1,3 @@
-// Package benchmark measures detection quality: it builds labelled series (or
-// accepts external ones, e.g. NAB / Yahoo S5) and scores an engine's output
-// with windowed precision / recall / F1. This is the objective quality gate the
-// project is held to.
 package benchmark
 
 import (
@@ -11,15 +7,12 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// Labeled is a series with ground-truth anomaly bucket-starts.
 type Labeled struct {
 	Points    []core.DataPoint
 	Anomalies map[time.Time]bool
 	Span      time.Duration
 }
 
-// Generate builds a deterministic, stationary noisy series with spikes injected
-// at the given bucket indices; those buckets are labelled as anomalies.
 func Generate(start time.Time, span time.Duration, n int, spikeAt []int, spikeMult float64) Labeled {
 	lbl := Labeled{Span: span, Anomalies: make(map[time.Time]bool)}
 	spikes := make(map[int]bool, len(spikeAt))
@@ -28,7 +21,7 @@ func Generate(start time.Time, span time.Duration, n int, spikeAt []int, spikeMu
 	}
 	for i := 0; i < n; i++ {
 		t := start.Add(time.Duration(i) * span)
-		v := 100 + 6*math.Sin(float64(i)*0.9) + 3*math.Sin(float64(i)*0.37) // stationary noise
+		v := 100 + 6*math.Sin(float64(i)*0.9) + 3*math.Sin(float64(i)*0.37)
 		if spikes[i] {
 			v *= spikeMult
 			lbl.Anomalies[t.Truncate(span)] = true
@@ -38,7 +31,6 @@ func Generate(start time.Time, span time.Duration, n int, spikeAt []int, spikeMu
 	return lbl
 }
 
-// ScoreResult holds windowed precision / recall / F1.
 type ScoreResult struct {
 	TP, FP, FN int
 	Precision  float64
@@ -46,9 +38,6 @@ type ScoreResult struct {
 	F1         float64
 }
 
-// Score matches flagged buckets (those with ≥1 record) against labels within
-// ±tolerance buckets. A flag near any label is a true positive; a label with no
-// nearby flag is a miss; a flag with no nearby label is a false positive.
 func Score(results []core.BucketResult, labels map[time.Time]bool, span time.Duration, tolerance int) ScoreResult {
 	flagged := make(map[time.Time]bool)
 	for _, br := range results {

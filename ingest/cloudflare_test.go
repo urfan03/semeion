@@ -9,15 +9,13 @@ import (
 	"github.com/urfan03/semeion/engine"
 )
 
-// Cloudflare Logpush parsing: field mapping, path normalization, status class,
-// and the three timestamp formats (RFC3339 string, unix-ns int, unix-s int).
 func TestParseLogpushMappingAndTimestamps(t *testing.T) {
 	nd := strings.Join([]string{
 		`{"EdgeStartTimestamp":"2026-01-01T00:00:00Z","ClientRequestHost":"api.example.com","ClientRequestPath":"/user/8412/orders?page=2","ClientRequestMethod":"GET","EdgeResponseStatus":200,"ClientCountry":"us","EdgeColoCode":"FRA","CacheCacheStatus":"hit","ClientIP":"1.2.3.4","OriginResponseDurationMs":42,"EdgeResponseBytes":900}`,
 		`{"EdgeStartTimestamp":1767225601000000000,"ClientRequestHost":"api.example.com","ClientRequestPath":"/health","ClientRequestMethod":"GET","EdgeResponseStatus":503,"ClientCountry":"de"}`,
 		`{"EdgeStartTimestamp":1767225602,"ClientRequestHost":"api.example.com","ClientRequestPath":"/login","ClientRequestMethod":"POST","EdgeResponseStatus":403,"WAFAction":"block"}`,
-		`   `,       // blank line skipped
-		`{bad json`, // malformed → skipped
+		`   `,
+		`{bad json`,
 	}, "\n")
 
 	pts, skipped, err := ParseLogpush(strings.NewReader(nd))
@@ -30,7 +28,7 @@ func TestParseLogpushMappingAndTimestamps(t *testing.T) {
 	if skipped != 1 {
 		t.Fatalf("expected 1 skipped (malformed) line, got %d", skipped)
 	}
-	// First event: path normalized, status class 2xx, metrics carried.
+
 	p0 := pts[0]
 	if p0.Fields["path"] != "/user/:id/orders" {
 		t.Fatalf("path should be normalized to /user/:id/orders, got %q", p0.Fields["path"])
@@ -41,7 +39,7 @@ func TestParseLogpushMappingAndTimestamps(t *testing.T) {
 	if p0.Values["origin_ms"] != 42 || p0.Values["resp_bytes"] != 900 {
 		t.Fatalf("unexpected metrics: %+v", p0.Values)
 	}
-	// Timestamps: RFC3339, then +1s (ns), then +2s (unix-s) — strictly increasing.
+
 	if !pts[0].Time.Before(pts[1].Time) || !pts[1].Time.Before(pts[2].Time) {
 		t.Fatalf("timestamps not increasing across formats: %v %v %v", pts[0].Time, pts[1].Time, pts[2].Time)
 	}
@@ -53,8 +51,6 @@ func TestParseLogpushMappingAndTimestamps(t *testing.T) {
 	}
 }
 
-// End-to-end: a Cloudflare job over a synthesized request stream flags a 5xx
-// error-class spike (a backend outage) as an anomaly on the status_class series.
 func TestCloudflareJobDetects5xxSpike(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var b strings.Builder
@@ -65,9 +61,7 @@ func TestCloudflareJobDetects5xxSpike(t *testing.T) {
 		b.WriteString(strconv.Itoa(status))
 		b.WriteString("}\n")
 	}
-	// 60 buckets. Baseline: ~48 OK/min + a steady trickle of 2 5xx/min (every real
-	// service has some). At bucket 50 the origin fails: a burst of 40 5xx — a ~20×
-	// spike on the 5xx count series.
+
 	for bkt := 0; bkt < 60; bkt++ {
 		base := t0.Add(time.Duration(bkt) * time.Minute)
 		for i := 0; i < 48; i++ {

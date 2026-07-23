@@ -9,9 +9,6 @@ var now = time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 
 const day = 24 * time.Hour
 
-// steady builds `n` minutely buckets ending at `now`, each with `total` events
-// and a fixed error ratio. Minutely resolution keeps every burn window (down to
-// the ~1-minute shortest for a 24h SLO) populated.
 func steady(n int, total, errRatio float64) []Sample {
 	s := make([]Sample, n)
 	for i := 0; i < n; i++ {
@@ -22,7 +19,7 @@ func steady(n int, total, errRatio float64) []Sample {
 }
 
 func TestHealthyBudget(t *testing.T) {
-	// 99.9% target, observed 99.95% → half the budget spent, nothing burning fast.
+
 	r := Evaluate(Target{Objective: 0.999, Window: day}, steady(1440, 1000, 0.0005), now)
 
 	if r.Severity != "ok" {
@@ -37,7 +34,7 @@ func TestHealthyBudget(t *testing.T) {
 }
 
 func TestBlownBudgetIsCritical(t *testing.T) {
-	// 5% errors against a 0.1% budget → burning ~50×.
+
 	r := Evaluate(Target{Objective: 0.999, Window: day}, steady(1440, 1000, 0.05), now)
 
 	if r.Severity != "critical" {
@@ -55,8 +52,7 @@ func TestBlownBudgetIsCritical(t *testing.T) {
 }
 
 func TestProjectedExhaustion(t *testing.T) {
-	// 0.5% errors against a 1% budget → burning 0.5×, budget half-spent and
-	// projected to run out in the future.
+
 	r := Evaluate(Target{Objective: 0.99, Window: day}, steady(1440, 1000, 0.005), now)
 
 	if r.BurnRate <= 0 || r.BurnRate >= 1 {
@@ -70,14 +66,12 @@ func TestProjectedExhaustion(t *testing.T) {
 	}
 }
 
-// A spike confined to the last half hour must raise burn on the short window
-// without blowing the day's budget — the whole point of multi-window.
 func TestRecentSpikeRaisesShortWindowBurn(t *testing.T) {
-	s := steady(1440, 1000, 0.0001) // healthy day
+	s := steady(1440, 1000, 0.0001)
 	for i := len(s) - 30; i < len(s); i++ {
-		s[i] = Sample{Time: s[i].Time, Total: 1000, Good: 800} // last 30m at 20% errors
+		s[i] = Sample{Time: s[i].Time, Total: 1000, Good: 800}
 	}
-	// 1% budget over the day: 30m at 20% burns fast but does not exhaust it.
+
 	r := Evaluate(Target{Objective: 0.99, Window: day}, s, now)
 
 	if len(r.Windows) < 1 || r.Windows[0].BurnRate < 14.4 {
@@ -91,8 +85,6 @@ func TestRecentSpikeRaisesShortWindowBurn(t *testing.T) {
 	}
 }
 
-// P1-L4 regression: no traffic is "no data", NOT healthy. A service that stopped
-// emitting (an outage that also killed its exporter) must not read as green.
 func TestNoTrafficIsNoData(t *testing.T) {
 	r := Evaluate(Target{Objective: 0.999, Window: day}, nil, now)
 	if !r.NoData || r.Severity != "no_data" {

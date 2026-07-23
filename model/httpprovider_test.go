@@ -35,14 +35,13 @@ func TestHTTPProviderCalls(t *testing.T) {
 	}
 }
 
-// On a transport error the provider falls back to the Go implementation.
 func TestHTTPProviderFallback(t *testing.T) {
-	p := NewHTTPProvider("http://127.0.0.1:1") // nothing listening
+	p := NewHTTPProvider("http://127.0.0.1:1")
 	x := make([]float64, 240)
 	for i := range x {
 		x[i] = 100 + 50*math.Sin(2*math.Pi*float64(i)/24)
 	}
-	// Fallback must still return the Go provider's period (~24), not panic.
+
 	if got := p.DetectSeasonality(x); len(got) == 0 {
 		t.Fatal("expected fallback to Go provider to detect a period")
 	}

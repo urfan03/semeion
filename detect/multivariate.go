@@ -2,12 +2,6 @@ package detect
 
 import "math"
 
-// MultivariateModel detects RELATIONSHIP-BREAK anomalies: it learns the mean
-// vector + covariance of a set of metrics and scores a new vector by its
-// Mahalanobis distance (χ² tail on k dof). This catches "CPU up + latency up +
-// throughput DOWN together" — anomalous jointly even when each metric alone is
-// in range — which Elastic's independent multi-metric jobs miss. It also
-// attributes the anomaly across metrics (each metric's share of the distance).
 type MultivariateModel struct {
 	k       int
 	window  int
@@ -15,14 +9,10 @@ type MultivariateModel struct {
 	history [][]float64
 }
 
-// NewMultivariateModel builds a model over k metrics.
 func NewMultivariateModel(k int) *MultivariateModel {
 	return &MultivariateModel{k: k, window: defaultWindow, warmup: defaultWarmup}
 }
 
-// Observe scores vec (length k) against the learned joint distribution and folds
-// it in. Returns the χ² tail probability, the 0..100 score, the Mahalanobis
-// distance, and each metric's contribution share (0..1, ~summing to 1) to it.
 func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, contrib []float64) {
 	if len(vec) != m.k {
 		return 1, 0, 0, nil
@@ -33,7 +23,7 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	}
 	mean := meanVec(m.history, m.k)
 	cov := covMatrix(m.history, mean)
-	ridgeDiagonal(cov) // stabilise near-singular covariances
+	ridgeDiagonal(cov)
 	inv, ok := invert(cov)
 	if !ok {
 		m.push(vec)
@@ -43,23 +33,18 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	for i := range d {
 		d[i] = vec[i] - mean[i]
 	}
-	iv := matVec(inv, d) // Σ⁻¹·(x−μ)
+	iv := matVec(inv, d)
 	var m2 float64
 	for i := range d {
 		m2 += d[i] * iv[i]
 	}
 	if m2 < 0 {
-		m2 = 0 // numerical guard
+		m2 = 0
 	}
 	prob = chiSquareTail(m2, m.k)
 	score = scoreFromProbability(prob)
 	dist = math.Sqrt(m2)
 
-	// Per-metric contribution. The raw quadratic-form terms dᵢ·(Σ⁻¹d)ᵢ can be
-	// negative for correlated metrics (off-diagonal Σ⁻¹ entries), which is
-	// meaningless as a "share". Clamp to non-negative and renormalize so the
-	// contributions are a genuine 0..1 attribution that sums to 1 — an operator
-	// can read "metric X drove 70% of it".
 	contrib = make([]float64, m.k)
 	if m2 > 0 {
 		var pos float64
@@ -86,8 +71,6 @@ func (m *MultivariateModel) push(vec []float64) {
 		m.history = m.history[len(m.history)-m.window:]
 	}
 }
-
-// ── linear algebra (small, dependency-free) ──────────────────────────────────
 
 func meanVec(rows [][]float64, k int) []float64 {
 	mean := make([]float64, k)
@@ -125,8 +108,6 @@ func covMatrix(rows [][]float64, mean []float64) [][]float64 {
 	return cov
 }
 
-// ridgeDiagonal adds a small multiple of the average variance to the diagonal so
-// collinear / low-sample covariances stay invertible (Tikhonov regularisation).
 func ridgeDiagonal(cov [][]float64) {
 	k := len(cov)
 	var tr float64
@@ -139,8 +120,6 @@ func ridgeDiagonal(cov [][]float64) {
 	}
 }
 
-// invert returns the inverse of a square matrix via Gauss-Jordan with partial
-// pivoting (false if singular).
 func invert(a [][]float64) ([][]float64, bool) {
 	n := len(a)
 	m := make([][]float64, n)
@@ -194,8 +173,6 @@ func matVec(a [][]float64, x []float64) []float64 {
 	return out
 }
 
-// ── χ² tail via the regularised upper incomplete gamma Q(k/2, x/2) ───────────
-
 func chiSquareTail(x float64, k int) float64 {
 	if x <= 0 || k <= 0 {
 		return 1
@@ -203,8 +180,6 @@ func chiSquareTail(x float64, k int) float64 {
 	return gammaQ(float64(k)/2, x/2)
 }
 
-// gammaQ is the regularised upper incomplete gamma Q(a,x)=1-P(a,x)
-// (Numerical Recipes: series for x<a+1, continued fraction otherwise).
 func gammaQ(a, x float64) float64 {
 	if x < 0 || a <= 0 {
 		return 1

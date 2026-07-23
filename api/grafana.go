@@ -10,21 +10,10 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// Grafana SimpleJSON datasource protocol. Point Grafana's SimpleJSON (or Infinity
-// in JSON mode) datasource at this server's /grafana/ base and semeion's anomaly
-// scores graph directly — no custom plugin to build/sign. Implements the four
-// endpoints a SimpleJSON source calls: "/" (health), /search (metric list),
-// /query (time series or table), /annotations (anomaly events).
-//
-// The existing GET /v1/grafana/{job} (flat rows) stays for ad-hoc/Infinity use;
-// this adds the full interactive datasource surface.
-
-// handleGrafanaRoot answers the datasource health check (any 200 body).
 func (s *Server) handleGrafanaRoot(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("semeion grafana datasource ok"))
 }
 
-// handleGrafanaSearch returns the selectable targets: every known job name.
 func (s *Server) handleGrafanaSearch(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	names := make([]string, 0, len(s.results)+len(s.live))
@@ -55,12 +44,10 @@ type grafanaQueryReq struct {
 	Range   grafanaRange `json:"range"`
 	Targets []struct {
 		Target string `json:"target"`
-		Type   string `json:"type"` // "timeserie" | "table"
+		Type   string `json:"type"`
 	} `json:"targets"`
 }
 
-// handleGrafanaQuery returns each target job's per-bucket max anomaly score as a
-// SimpleJSON timeseries (or a flat table when the target asks for "table").
 func (s *Server) handleGrafanaQuery(w http.ResponseWriter, r *http.Request) {
 	var req grafanaQueryReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -100,7 +87,6 @@ func (s *Server) handleGrafanaQuery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// grafanaTable renders a job's records as a SimpleJSON table result.
 func (s *Server) grafanaTable(job string, res []core.BucketResult, inRange func(time.Time) bool) map[string]any {
 	rows := [][]any{}
 	for _, br := range res {
@@ -130,12 +116,10 @@ type grafanaAnnotationReq struct {
 	Range      grafanaRange `json:"range"`
 	Annotation struct {
 		Name  string `json:"name"`
-		Query string `json:"query"` // a job name, or empty for all jobs
+		Query string `json:"query"`
 	} `json:"annotation"`
 }
 
-// handleGrafanaAnnotations returns anomalies as Grafana annotations (event markers
-// on any panel), filtered to the query's job and the dashboard time range.
 func (s *Server) handleGrafanaAnnotations(w http.ResponseWriter, r *http.Request) {
 	var req grafanaAnnotationReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -26,7 +26,6 @@ func TestIncidentsTrackedViewIsStable(t *testing.T) {
 	now := time.Now().UTC()
 	storeSym(s, "checkout", "checkout", now, 90)
 
-	// First GET opens the incident and returns it with a stable id.
 	w := do(t, h, http.MethodGet, "/v1/incidents?window=10m", "")
 	var res struct {
 		Incidents []correlate.Tracked `json:"incidents"`
@@ -42,14 +41,12 @@ func TestIncidentsTrackedViewIsStable(t *testing.T) {
 		t.Fatal("tracked incident needs a stable id")
 	}
 
-	// Second GET must reuse the same id, not mint a new one.
 	w = do(t, h, http.MethodGet, "/v1/incidents?window=10m", "")
 	_ = json.Unmarshal(w.Body.Bytes(), &res)
 	if len(res.Incidents) != 1 || res.Incidents[0].ID != id {
 		t.Fatalf("id should be stable across calls: %+v", res.Incidents)
 	}
 
-	// /open returns it too.
 	if w := do(t, h, http.MethodGet, "/v1/incidents/open", ""); w.Code != http.StatusOK {
 		t.Fatalf("/open: %d", w.Code)
 	}
@@ -71,7 +68,7 @@ func TestStatelessViewSkipsTheTracker(t *testing.T) {
 	if res.Incidents[0].Status != "" {
 		t.Errorf("a stateless correlation must not carry lifecycle status, got %q", res.Incidents[0].Status)
 	}
-	// Nothing should have been tracked.
+
 	if w := do(t, s.Handler(), http.MethodGet, "/v1/incidents/open", ""); w.Code == http.StatusOK {
 		var open struct {
 			Incidents []correlate.Tracked `json:"incidents"`
@@ -83,8 +80,6 @@ func TestStatelessViewSkipsTheTracker(t *testing.T) {
 	}
 }
 
-// The end-to-end lifecycle alert: an incident that opens fires exactly one
-// alert, not one per ingest.
 func TestLiveIngestOpensIncidentAndAlertsOnce(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -101,7 +96,6 @@ func TestLiveIngestOpensIncidentAndAlertsOnce(t *testing.T) {
 
 	s := NewServer().WithNotifier(alert.NewNotifier(alert.NewWebhookSink(hook.URL)))
 	h := s.Handler()
-	// Speed the tracker up isn't needed; we only assert the "opened" event here.
 
 	if w := do(t, h, http.MethodPost, "/v1/jobs",
 		`{"job":{"name":"checkout","bucket_span":"1m","detectors":[{"function":"mean","field":"value","side":"high"}]},"metric":"m"}`); w.Code != http.StatusCreated {
@@ -139,7 +133,6 @@ func TestLiveIngestOpensIncidentAndAlertsOnce(t *testing.T) {
 		t.Fatalf("expected exactly one incident-opened alert, got %d (all: %+v)", incidentAlerts, fired)
 	}
 
-	// The incident is now tracked and open.
 	w := do(t, h, http.MethodGet, "/v1/incidents/open", "")
 	var open struct {
 		Incidents []correlate.Tracked `json:"incidents"`

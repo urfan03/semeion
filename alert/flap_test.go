@@ -8,7 +8,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// digestCapSink records delivered alerts for assertions.
 type digestCapSink struct{ got []Alert }
 
 func (c *digestCapSink) Name() string { return "capture" }
@@ -17,8 +16,6 @@ func (c *digestCapSink) Send(_ context.Context, a Alert) error {
 	return nil
 }
 
-// #5: a series that keeps alerting is flagged as flapping and suppressed after
-// the threshold, instead of paging on every cycle.
 func TestNotifierFlappingSuppression(t *testing.T) {
 	cap := &digestCapSink{}
 	n := NewNotifier(cap)
@@ -27,7 +24,7 @@ func TestNotifierFlappingSuppression(t *testing.T) {
 	n.FlapWindow = 2 * time.Hour
 
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// Alert every 15 minutes (clears the 10m dedup) for the same series.
+
 	delivered := 0
 	for i := 0; i < 8; i++ {
 		rec := core.Record{Time: t0.Add(time.Duration(i) * 15 * time.Minute),
@@ -38,8 +35,7 @@ func TestNotifierFlappingSuppression(t *testing.T) {
 		}
 		delivered += sent
 	}
-	// Threshold 3 → after 3 admitted alerts the series is flapping; the rest are
-	// suppressed. So far fewer than 8 pages.
+
 	if delivered > 3 {
 		t.Fatalf("flapping should cap pages at the threshold (~3), got %d", delivered)
 	}
@@ -48,8 +44,6 @@ func TestNotifierFlappingSuppression(t *testing.T) {
 	}
 }
 
-// #5: the digest folds a batch of alerts into a single summary carrying the max
-// score and a per-detector breakdown.
 func TestDigestSummary(t *testing.T) {
 	d := NewDigest()
 	if _, _, ok := d.Flush(); ok {
@@ -70,7 +64,7 @@ func TestDigestSummary(t *testing.T) {
 	if sum.Description() == "" || sum.Note == "" {
 		t.Fatalf("summary should carry a text breakdown: %q", sum.Note)
 	}
-	// Flushing again is empty (the batch was cleared).
+
 	if _, _, ok := d.Flush(); ok {
 		t.Fatal("digest should be empty after flush")
 	}

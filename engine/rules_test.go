@@ -8,16 +8,14 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// #4 rich rules: a relative diff-from-typical floor suppresses a statistically
-// unusual but operationally tiny deviation, while a large deviation still fires.
 func TestRuleSkipDiffRatio(t *testing.T) {
 	ratio := 0.10
 	d := jobspec.Detector{Function: jobspec.FuncMean, Field: "v", Side: jobspec.SideHigh,
 		Rules: []jobspec.Rule{{SkipDiffRatioBelow: &ratio}}}
 	e := &Engine{job: jobspec.Job{Detectors: []jobspec.Detector{d}}}
 
-	tiny := core.Record{Actual: 103, Typical: 100} // 3% over → below the 10% floor
-	big := core.Record{Actual: 180, Typical: 100}  // 80% over → fires
+	tiny := core.Record{Actual: 103, Typical: 100}
+	big := core.Record{Actual: 180, Typical: 100}
 	if !e.suppressed(d, tiny) {
 		t.Fatal("a 3% deviation should be suppressed by a 10% diff-ratio floor")
 	}
@@ -26,7 +24,6 @@ func TestRuleSkipDiffRatio(t *testing.T) {
 	}
 }
 
-// #4: an hour-of-day mute window suppresses results in that window only.
 func TestRuleSkipHours(t *testing.T) {
 	d := jobspec.Detector{Function: jobspec.FuncCount,
 		Rules: []jobspec.Rule{{SkipHoursUTC: []int{2, 3}}}}
@@ -42,8 +39,6 @@ func TestRuleSkipHours(t *testing.T) {
 	}
 }
 
-// #4: an influencer safelist suppresses results attributed to a muted dimension
-// value (e.g. env=staging), regardless of the series key.
 func TestRuleSkipInfluencer(t *testing.T) {
 	d := jobspec.Detector{Function: jobspec.FuncMean, Field: "v",
 		Rules: []jobspec.Rule{{SkipInfluencer: map[string][]string{"env": {"staging"}}}}}

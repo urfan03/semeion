@@ -1,10 +1,3 @@
-// Package otlp decodes OpenTelemetry's JSON wire format (OTLP/HTTP) into
-// semeion's core types.
-//
-// This is deliberately a *decoder*, not an OTel SDK dependency: any collector
-// can `otlphttp`-export to semeion with `encoding: json`, and semeion stays a
-// zero-dependency static binary. Only the parts that carry a signal are
-// decoded — gauges, sums and histograms for metrics, and log records.
 package otlp
 
 import (
@@ -16,21 +9,16 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// MetricPoint is one OTLP data point, tagged with the metric it belongs to.
 type MetricPoint struct {
 	Metric string
 	Point  core.DataPoint
 }
-
-// ── wire types ───────────────────────────────────────────────────────────────
 
 type kv struct {
 	Key   string   `json:"key"`
 	Value anyValue `json:"value"`
 }
 
-// anyValue is OTLP's AnyValue. Ints arrive as JSON *strings* (int64 safety), so
-// every numeric field is decoded through json.Number.
 type anyValue struct {
 	StringValue *string      `json:"stringValue"`
 	IntValue    *json.Number `json:"intValue"`
@@ -58,13 +46,10 @@ type dataPoint struct {
 	AsInt        *json.Number `json:"asInt"`
 	Attributes   []kv         `json:"attributes"`
 
-	// Histogram fields — semeion scores the bucket mean (sum/count), which is
-	// what a "mean latency" detector expects.
 	Count *json.Number `json:"count"`
 	Sum   *json.Number `json:"sum"`
 }
 
-// dpContainer is the shape gauge, sum and histogram all share.
 type dpContainer struct {
 	DataPoints []dataPoint `json:"dataPoints"`
 }
@@ -111,11 +96,6 @@ type logsPayload struct {
 	} `json:"resourceLogs"`
 }
 
-// ── decoding ─────────────────────────────────────────────────────────────────
-
-// ParseMetrics decodes an OTLP/JSON ExportMetricsServiceRequest. Resource and
-// point attributes both become dimensions, so `by`/`partition` splitting works
-// on service.name, host, route, … without any extra configuration.
 func ParseMetrics(body []byte) ([]MetricPoint, error) {
 	var p metricsPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -153,8 +133,7 @@ func toPoint(name string, dp dataPoint, base map[string]string) (MetricPoint, bo
 		Time:   ts,
 		Value:  v,
 		Fields: attrs(dp.Attributes, base),
-		// Named too, so a detector can address the metric by name — and several
-		// metrics can feed one multivariate detector.
+
 		Values: map[string]float64{name: v},
 	}
 	return MetricPoint{Metric: name, Point: p}, true
@@ -171,8 +150,7 @@ func value(dp dataPoint) (float64, bool) {
 			return f, true
 		}
 	}
-	// Histogram: the mean is the meaningful scalar. A zero-count bucket carries
-	// no observation, so it is skipped rather than scored as 0.
+
 	if dp.Sum != nil && dp.Count != nil {
 		sum, e1 := dp.Sum.Float64()
 		cnt, e2 := dp.Count.Float64()
@@ -183,8 +161,6 @@ func value(dp dataPoint) (float64, bool) {
 	return 0, false
 }
 
-// ParseLogs decodes an OTLP/JSON ExportLogsServiceRequest into log lines ready
-// for the Drain categorizer.
 func ParseLogs(body []byte) ([]core.LogLine, error) {
 	var p logsPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -197,7 +173,7 @@ func ParseLogs(body []byte) ([]core.LogLine, error) {
 			for _, lr := range sl.LogRecords {
 				ts, ok := nanos(lr.TimeUnixNano)
 				if !ok {
-					// Emitters may only set the observed time.
+
 					if ts, ok = nanos(lr.ObservedTimeUnixNano); !ok {
 						continue
 					}
@@ -220,7 +196,6 @@ func ParseLogs(body []byte) ([]core.LogLine, error) {
 	return out, nil
 }
 
-// attrs merges point attributes over the resource-level base without mutating it.
 func attrs(list []kv, base map[string]string) map[string]string {
 	if len(list) == 0 && len(base) == 0 {
 		return nil

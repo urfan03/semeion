@@ -7,8 +7,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// #10: influencer aggregation ranks the entity carrying the most anomalous mass
-// across the whole window, weighting each record's score by attribution share.
 func TestRankInfluencers(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rec := func(min int, score float64, host string, share float64) core.Record {
@@ -30,7 +28,7 @@ func TestRankInfluencers(t *testing.T) {
 	if ranked[0].Records != 2 || ranked[0].Total != 170 || ranked[0].MaxScore != 90 {
 		t.Fatalf("db-3 aggregation wrong: %+v", ranked[0])
 	}
-	// Field filter.
+
 	only := RankInfluencers(results, "nonexistent")
 	if len(only) != 0 {
 		t.Fatalf("filtering to a missing field should yield nothing, got %d", len(only))

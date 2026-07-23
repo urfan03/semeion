@@ -8,7 +8,6 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// feed builds n minutely points on one series with a per-index value function.
 func feed(start time.Time, n int, val func(i int) float64) []core.DataPoint {
 	pts := make([]core.DataPoint, n)
 	for i := range pts {
@@ -18,9 +17,6 @@ func feed(start time.Time, n int, val func(i int) float64) []core.DataPoint {
 	return pts
 }
 
-// C1 regression: every model family — not just plain mean — must survive a
-// snapshot/restore. Before the fix, seasonal/distribution/multivariate/slot
-// state was dropped and Restore silently cold-started those detectors.
 func TestSnapshotRestoreAllModelKinds(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	cases := map[string]jobspec.Job{
@@ -40,7 +36,7 @@ func TestSnapshotRestoreAllModelKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Warm it with 120 points so the models actually learn something.
+
 			pts := feed(start, 120, func(i int) float64 { return 100 + 10*float64(i%12) })
 			for _, p := range pts {
 				fieldPoint(&p, "v")
@@ -49,7 +45,7 @@ func TestSnapshotRestoreAllModelKinds(t *testing.T) {
 			eng.Flush()
 
 			snap := eng.Snapshot()
-			// The relevant map must be non-empty in the snapshot.
+
 			switch name {
 			case "distribution":
 				if len(snap.Distrib) == 0 {
@@ -69,7 +65,6 @@ func TestSnapshotRestoreAllModelKinds(t *testing.T) {
 				}
 			}
 
-			// Restore into a fresh engine; it must NOT be cold (models present).
 			restored, err := New(job)
 			if err != nil {
 				t.Fatal(err)
@@ -85,8 +80,6 @@ func TestSnapshotRestoreAllModelKinds(t *testing.T) {
 	}
 }
 
-// fieldPoint mirrors the metric value into the named field so single-field
-// detectors read it via Values as well as Value.
 func fieldPoint(p *core.DataPoint, field string) {
 	if p.Values == nil {
 		p.Values = map[string]float64{}

@@ -15,13 +15,8 @@ import (
 	"github.com/urfan03/semeion/topology"
 )
 
-// stateVersion guards against loading a snapshot from an incompatible build.
 const stateVersion = 1
 
-// ServerState is everything a restart would otherwise lose: the intelligence
-// state (changes, dependency graph, incident tracker, error budgets) and the
-// live jobs with their learned baselines. Detection results are not persisted —
-// they are cheap to recompute and bounded in memory already.
 type ServerState struct {
 	Version  int                       `json:"version"`
 	SavedAt  time.Time                 `json:"saved_at"`
@@ -37,8 +32,6 @@ type sloSnapshot struct {
 	Samples []slo.Sample `json:"samples"`
 }
 
-// liveJobSnapshot persists a live job's definition and its learned baselines, so
-// after a restart it re-registers and keeps its model instead of re-warming.
 type liveJobSnapshot struct {
 	Name       string           `json:"name"`
 	Metric     string           `json:"metric,omitempty"`
@@ -53,7 +46,6 @@ type liveJobSnapshot struct {
 	Last       time.Time        `json:"last"`
 }
 
-// Snapshot captures the full server state.
 func (s *Server) Snapshot() ServerState {
 	st := ServerState{
 		Version: stateVersion,
@@ -88,7 +80,7 @@ func (s *Server) Snapshot() ServerState {
 		if lj.cat != nil {
 			cs := lj.cat.Snapshot()
 			snap.Cat = &cs
-			snap.BucketSpan = cs.Span.String() // for the (unlikely) nil-cat restore path
+			snap.BucketSpan = cs.Span.String()
 		}
 		lj.mu.Unlock()
 		st.LiveJobs = append(st.LiveJobs, snap)
@@ -96,8 +88,6 @@ func (s *Server) Snapshot() ServerState {
 	return st
 }
 
-// Restore rebuilds server state from a snapshot. It is meant to run once, on a
-// fresh server, before it starts serving.
 func (s *Server) Restore(st ServerState) error {
 	if st.Version != stateVersion {
 		return fmt.Errorf("state version %d unsupported (want %d)", st.Version, stateVersion)
@@ -145,7 +135,6 @@ func (s *Server) Restore(st ServerState) error {
 	return nil
 }
 
-// SaveState writes the server state to path (atomically, via a temp file).
 func (s *Server) SaveState(path string) error {
 	raw, err := json.Marshal(s.Snapshot())
 	if err != nil {
@@ -163,8 +152,6 @@ func (s *Server) SaveState(path string) error {
 	return os.Rename(tmp, path)
 }
 
-// LoadState restores server state from path. A missing file is not an error —
-// a first run simply starts empty. The bool reports whether a file was loaded.
 func (s *Server) LoadState(path string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

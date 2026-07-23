@@ -10,10 +10,8 @@ import (
 )
 
 type outlierRequest struct {
-	// Rows are free-form objects: numeric fields become features, string fields
-	// are kept as labels and echoed back ("which host is the odd one out").
 	Rows []map[string]any `json:"rows"`
-	// Features optionally restricts (and orders) the columns used.
+
 	Features []string `json:"features"`
 	K        int      `json:"k"`
 	Top      int      `json:"top"`
@@ -25,7 +23,6 @@ type outlierResult struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
-// outliers returns the configured detector, defaulting to the built-in ensemble.
 func (s *Server) outliers() outlier.Detector {
 	if s.outlierDetector != nil {
 		return s.outlierDetector
@@ -33,8 +30,6 @@ func (s *Server) outliers() outlier.Detector {
 	return outlier.GoDetector{}
 }
 
-// handleOutliers scores a table of rows against each other — the batch,
-// population question, as opposed to the streaming, time-series one.
 func (s *Server) handleOutliers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -71,9 +66,6 @@ func (s *Server) handleOutliers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"features": features, "rows": len(rows), "results": out})
 }
 
-// tabulate turns JSON objects into a numeric matrix plus per-row labels. Every
-// row must carry every feature: silently imputing a missing value would invent
-// data, and an outlier score built on invented data is worse than no answer.
 func tabulate(rows []map[string]any, want []string) ([]string, [][]float64, []map[string]string, error) {
 	if len(rows) == 0 {
 		return nil, nil, nil, fmt.Errorf("no rows")

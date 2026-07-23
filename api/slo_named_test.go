@@ -9,7 +9,6 @@ import (
 	"github.com/urfan03/semeion/slo"
 )
 
-// sloSamples renders `n` minutely buckets ending at `end` with a fixed error ratio.
 func sloSamples(end time.Time, n int, total, errRatio float64) []slo.Sample {
 	s := make([]slo.Sample, n)
 	for i := 0; i < n; i++ {
@@ -26,7 +25,6 @@ func TestNamedSLOAccumulatesAndReports(t *testing.T) {
 	h := s.Handler()
 	end := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 
-	// First append sets the target and half the samples.
 	body, _ := json.Marshal(map[string]any{
 		"objective": 0.999, "window": "24h",
 		"samples": sloSamples(end.Add(-12*time.Hour), 720, 1000, 0.05), "now": end.Add(-12 * time.Hour),
@@ -34,7 +32,7 @@ func TestNamedSLOAccumulatesAndReports(t *testing.T) {
 	if w := do(t, h, http.MethodPost, "/v1/slo/checkout-availability", string(body)); w.Code != http.StatusOK {
 		t.Fatalf("append 1: %d %s", w.Code, w.Body)
 	}
-	// Second append adds the rest; the series remembers the target.
+
 	body, _ = json.Marshal(map[string]any{
 		"samples": sloSamples(end, 720, 1000, 0.05), "now": end,
 	})
@@ -51,7 +49,6 @@ func TestNamedSLOAccumulatesAndReports(t *testing.T) {
 		t.Errorf("5%% errors vs three-nines should be critical, got %q", rep.Severity)
 	}
 
-	// GET returns the same standing report.
 	w = do(t, h, http.MethodGet, "/v1/slo/checkout-availability", "")
 	var got slo.Report
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
@@ -104,7 +101,6 @@ func TestSLOWindowTrimsOldSamples(t *testing.T) {
 	h := s.Handler()
 	end := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 
-	// A 1h window; push 10h of data. The ring should trim to ~2× window, not keep all.
 	body, _ := json.Marshal(map[string]any{
 		"objective": 0.99, "window": "1h",
 		"samples": sloSamples(end, 600, 100, 0.001), "now": end,
@@ -139,7 +135,7 @@ func TestSLOStatelessStillWorks(t *testing.T) {
 	if rep.Severity != "critical" {
 		t.Fatalf("stateless eval still expected, got %q", rep.Severity)
 	}
-	// Stateless must not create a named series.
+
 	if s.sloSeries("", false) != nil {
 		t.Error("stateless eval should not persist anything")
 	}
@@ -156,7 +152,7 @@ func TestSLODefaultClockIsLatestSample(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
 	old := time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC)
-	// Append historical clean data with no explicit `now`.
+
 	body, _ := json.Marshal(map[string]any{
 		"objective": 0.99, "window": "1h",
 		"samples": sloSamples(old, 120, 100, 0.0),

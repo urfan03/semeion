@@ -10,17 +10,12 @@ import (
 	"time"
 )
 
-// HTTPProvider calls an out-of-process model service (the optional Python plane)
-// over JSON/HTTP. Each method POSTs to /{method}; on any transport error it
-// transparently falls back to the pure-Go provider, so enabling the Python
-// plane can only add capability, never break a run.
 type HTTPProvider struct {
 	BaseURL  string
 	HTTP     *http.Client
 	fallback GoProvider
 }
 
-// NewHTTPProvider builds a provider that talks to baseURL (e.g. http://127.0.0.1:8899).
 func NewHTTPProvider(baseURL string) *HTTPProvider {
 	return &HTTPProvider{
 		BaseURL: strings.TrimRight(baseURL, "/"),

@@ -46,7 +46,7 @@ func TestHTTPDetectorFallsBackToGo(t *testing.T) {
 	features, rows := table()
 
 	cases := map[string]http.HandlerFunc{
-		"plane down": nil, // server closed below
+		"plane down": nil,
 		"error": func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "pyod not installed", http.StatusBadRequest)
 		},
@@ -59,7 +59,7 @@ func TestHTTPDetectorFallsBackToGo(t *testing.T) {
 	}
 	for name, h := range cases {
 		t.Run(name, func(t *testing.T) {
-			url := "http://127.0.0.1:1" // nothing listens here
+			url := "http://127.0.0.1:1"
 			if h != nil {
 				srv := httptest.NewServer(h)
 				defer srv.Close()
@@ -72,7 +72,7 @@ func TestHTTPDetectorFallsBackToGo(t *testing.T) {
 			if len(got) != len(rows) {
 				t.Fatalf("fallback should score every row, got %d", len(got))
 			}
-			// The Go ensemble must still find the planted outlier.
+
 			if top := Top(got, 1); top[0].Index != len(rows)-1 {
 				t.Fatalf("fallback did not detect the outlier: %+v", top[0])
 			}

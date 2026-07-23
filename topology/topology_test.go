@@ -53,8 +53,7 @@ func TestGraphFromTraces(t *testing.T) {
 	g := build(t)
 
 	edges := g.Edges()
-	// gateway→checkout and checkout→payments-db. The checkout-internal span
-	// must NOT create a self-edge.
+
 	if len(edges) != 2 {
 		t.Fatalf("expected 2 edges, got %d: %+v", len(edges), edges)
 	}
@@ -89,7 +88,7 @@ func TestRelatedAndReaches(t *testing.T) {
 	if g.Related("gateway", "payments-db") {
 		t.Error("gateway and payments-db are not directly related")
 	}
-	// Transitively, gateway does reach the database.
+
 	if !g.Reaches("gateway", "payments-db", 4) {
 		t.Error("gateway should reach payments-db in 2 hops")
 	}
@@ -103,7 +102,7 @@ func TestRelatedAndReaches(t *testing.T) {
 
 func TestUpstreamOfCountsWhoDependsOnYou(t *testing.T) {
 	g := build(t)
-	// Everything depends on the database; the database depends on nothing.
+
 	if n := g.UpstreamOf("payments-db", []string{"gateway", "checkout"}, 4); n != 2 {
 		t.Errorf("payments-db should be upstream of both, got %d", n)
 	}
@@ -113,8 +112,7 @@ func TestUpstreamOfCountsWhoDependsOnYou(t *testing.T) {
 }
 
 func TestObserveIgnoresUnresolvableParents(t *testing.T) {
-	// A batch carrying only the child: the parent is in another batch, so no
-	// edge may be invented.
+
 	partial := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},
 	  "scopeSpans":[{"spans":[{"traceId":"t9","spanId":"z2","parentSpanId":"z1","name":"charge",
 	  "startTimeUnixNano":"1767225600000000000"}]}]}]}`

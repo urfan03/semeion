@@ -13,27 +13,21 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// ESMetric describes the aggregation an Elasticsearch datafeed computes per
-// bucket. Func is "count" or a metric name ("mean"/"avg", "sum", "min", "max").
 type ESMetric struct {
 	Func  string
-	Field string // required unless Func == "count"
+	Field string
 }
 
-// ESSource reads from Elasticsearch (or OpenSearch) via a date_histogram
-// aggregation — the free path that needs no ML license. It turns a raw index
-// into a per-bucket time series the engine can score.
 type ESSource struct {
-	BaseURL   string // e.g. http://localhost:9200
+	BaseURL   string
 	Index     string
 	TimeField string
 	Metric    ESMetric
 	HTTP      *http.Client
-	Username  string // optional basic auth
+	Username  string
 	Password  string
 }
 
-// NewESSource builds an Elasticsearch source with the default HTTP client.
 func NewESSource(baseURL, index, timeField string, m ESMetric) *ESSource {
 	return &ESSource{BaseURL: baseURL, Index: index, TimeField: timeField, Metric: m, HTTP: http.DefaultClient}
 }
@@ -77,7 +71,6 @@ func (s *ESSource) buildBody(start, end time.Time, step time.Duration) ([]byte, 
 	return json.Marshal(body)
 }
 
-// Fetch runs the aggregation and returns one point per histogram bucket.
 func (s *ESSource) Fetch(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
 	body, err := s.buildBody(start, end, step)
 	if err != nil {
@@ -135,7 +128,7 @@ func parseESAgg(body []byte, isCount bool) ([]core.DataPoint, error) {
 			v = float64(b.DocCount)
 		} else {
 			if b.Metric == nil || b.Metric.Value == nil {
-				continue // empty bucket → no metric value
+				continue
 			}
 			v = *b.Metric.Value
 		}

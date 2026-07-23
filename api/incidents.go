@@ -13,13 +13,8 @@ import (
 	"github.com/urfan03/semeion/correlate"
 )
 
-// maxChanges caps the change log. Changes are cheap to keep and only useful for
-// the recent past — an incident is not explained by last month's deploy.
 const maxChanges = 1000
 
-// RecordChange appends a deliberate event (deploy, config push, traffic shift).
-// This is the hook a CI pipeline calls; it is what lets an incident say "the
-// deploy came first" instead of leaving a human to check.
 func (s *Server) RecordChange(c correlate.Change) {
 	if c.Time.IsZero() {
 		c.Time = time.Now().UTC()
@@ -58,9 +53,6 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// correlateAll builds the symptom + change set from everything the server holds
-// and correlates it. It is the shared core of the incident endpoints and the
-// ingest-triggered reconcile.
 func (s *Server) correlateAll(opt correlate.Options) (incidents []correlate.Incident, symptoms int) {
 	if !s.graph.Empty() {
 		opt.Topology = s.graph
@@ -76,15 +68,8 @@ func (s *Server) correlateAll(opt correlate.Options) (incidents []correlate.Inci
 	return correlate.Correlate(syms, changes, opt), len(syms)
 }
 
-// handleIncidents correlates everything the server currently holds — every
-// job's results plus the recorded changes — into incidents.
-//
-// This is the step that turns "47 anomalies" into "3 incidents, and here is
-// what probably started each one". By default it returns the tracked, stateful
-// view (stable ids, open/resolved status); pass ?stateless=1 for a fresh
-// one-shot correlation with no lifecycle.
 func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
-	// The /open and /resolved sub-paths return the tracked sets directly.
+
 	switch strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/incidents"), "/") {
 	case "open":
 		writeJSON(w, map[string]any{"incidents": s.tracker.Open()})
@@ -102,8 +87,7 @@ func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
 	incidents, symptoms := s.correlateAll(opt)
 
 	if r.URL.Query().Get("stateless") == "" {
-		// Fold into the tracker so ids are stable and status is reported, then
-		// return the open set (plus any that just resolved this pass).
+
 		s.reconcile(r.Context(), incidents)
 		tracked := s.tracker.Open()
 		if top := queryInt(r, "top", 0); top > 0 && top < len(tracked) {
@@ -119,8 +103,6 @@ func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"window": opt.Window.String(), "symptoms": symptoms, "incidents": incidents})
 }
 
-// reconcile feeds a fresh correlation into the tracker and alerts on the
-// lifecycle events it produces. Alerting failures never stop reconciliation.
 func (s *Server) reconcile(ctx context.Context, incidents []correlate.Incident) []correlate.Event {
 	events := s.tracker.Reconcile(incidents)
 	s.mu.RLock()
@@ -141,16 +123,11 @@ func (s *Server) reconcile(ctx context.Context, incidents []correlate.Incident) 
 	return events
 }
 
-// reconcileFromStore recorrelates and reconciles using the server's default
-// window — called on the ingest path so incidents open/resolve as data flows,
-// without waiting for someone to GET /v1/incidents.
 func (s *Server) reconcileFromStore(ctx context.Context) {
 	incidents, _ := s.correlateAll(correlate.Options{Window: 10 * time.Minute})
 	s.reconcile(ctx, incidents)
 }
 
-// incidentAlert renders a lifecycle event as an alert. A resolution is always
-// info severity; an open/escalation carries the incident's peak score.
 func incidentAlert(ev correlate.Event) alert.Alert {
 	inc := ev.Incident
 	score := inc.PeakScore
@@ -180,8 +157,6 @@ func incidentAlert(ev correlate.Event) alert.Alert {
 	return a
 }
 
-// handleCorrelate correlates a caller-supplied set — for tools that keep their
-// own anomaly store and only want the grouping and ranking.
 func (s *Server) handleCorrelate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -211,8 +186,6 @@ func (s *Server) handleCorrelate(w http.ResponseWriter, r *http.Request) {
 	incidents := correlate.Correlate(req.Symptoms, req.Changes, opt)
 	writeJSON(w, map[string]any{"symptoms": len(req.Symptoms), "incidents": incidents})
 }
-
-// ── query helpers ────────────────────────────────────────────────────────────
 
 func optDuration(s string) (time.Duration, error) {
 	if s == "" {

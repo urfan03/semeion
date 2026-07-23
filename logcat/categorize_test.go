@@ -8,7 +8,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// build appends n copies of msg at bucket index i (1-minute buckets).
 func build(lines []core.LogLine, start time.Time, i, n int, msg string) []core.LogLine {
 	t := start.Add(time.Duration(i) * time.Minute)
 	for k := 0; k < n; k++ {
@@ -21,14 +20,14 @@ func categorizeSeries(t *testing.T) ([]core.BucketResult, *Categorizer) {
 	t.Helper()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var lines []core.LogLine
-	// 32 buckets of two stable templates (steady, low volume).
+
 	for i := 0; i < 32; i++ {
 		lines = build(lines, start, i, 3, "GET /api/users status 200 in 12 ms")
 		lines = build(lines, start, i, 2, "cache hit for key session-42")
 	}
-	// bucket 30: a brand-new template appears.
+
 	lines = build(lines, start, 30, 5, "panic runtime error nil pointer at 0x1a2b3c4d")
-	// bucket 31: the GET template spikes hard.
+
 	lines = build(lines, start, 31, 60, "GET /api/users status 200 in 15 ms")
 
 	c := NewCategorizer(time.Minute)
@@ -61,7 +60,6 @@ func TestCategorizerNewAndSpike(t *testing.T) {
 	}
 }
 
-// A suppressed template must not be reported.
 func TestCategorizerSuppress(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var lines []core.LogLine
@@ -71,7 +69,7 @@ func TestCategorizerSuppress(t *testing.T) {
 	lines = build(lines, start, 25, 5, "brand new error code 500 occurred")
 
 	c := NewCategorizer(time.Minute)
-	// The panic-like template will get ID 2 (GET is ID 1). Suppress it up front.
+
 	c.Suppress(2)
 	results := c.Run(lines, 50)
 
@@ -84,8 +82,6 @@ func TestCategorizerSuppress(t *testing.T) {
 	}
 }
 
-// Streaming (Push/Flush) over time-sorted lines yields the same anomalies as
-// batch Run.
 func TestCategorizerStreamingMatchesBatch(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var lines []core.LogLine
@@ -114,8 +110,6 @@ func TestCategorizerStreamingMatchesBatch(t *testing.T) {
 	}
 }
 
-// A snapshot mid-stream, restored into a fresh categorizer, keeps templates and
-// baselines so a subsequent spike is still detected.
 func TestCategorizerSnapshotRestore(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var warm []core.LogLine
@@ -131,7 +125,7 @@ func TestCategorizerSnapshotRestore(t *testing.T) {
 		t.Fatalf("restored clusters: got %d want %d",
 			len(restored.Drain().Clusters()), len(orig.Drain().Clusters()))
 	}
-	// Feed a spike bucket to the restored categorizer; it must fire.
+
 	var spike []core.LogLine
 	spike = build(spike, start, 30, 60, "GET /api/users status 200 in 9 ms")
 	res := restored.Run(spike, 50)

@@ -8,15 +8,12 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// #9: a count detector treats a missing bucket as a real zero. A steady stream of
-// ~100 events/bucket that suddenly goes silent for several buckets must flag the
-// silent (count=0) buckets as low-side anomalies — not skip them.
 func TestGapFillCountDropToZero(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for b := 0; b < 60; b++ {
 		if b >= 40 && b < 45 {
-			continue // buckets 40..44 are silent (no data at all)
+			continue
 		}
 		bt := t0.Add(time.Duration(b) * time.Minute)
 		for i := 0; i < 100; i++ {
@@ -50,14 +47,12 @@ func TestGapFillCountDropToZero(t *testing.T) {
 	}
 }
 
-// #9: a metric (mean) detector does NOT invent zeros for missing buckets — a gap
-// is no-data, not a drop to 0 — so gap-fill stays off for a pure metric job.
 func TestGapFillOffForMetricJob(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for b := 0; b < 30; b++ {
 		if b >= 10 && b < 20 {
-			continue // long gap
+			continue
 		}
 		bt := t0.Add(time.Duration(b) * time.Minute)
 		pts = append(pts, core.DataPoint{Time: bt, Values: map[string]float64{"v": 100}})
@@ -74,8 +69,6 @@ func TestGapFillOffForMetricJob(t *testing.T) {
 	}
 }
 
-// #9: the streaming path gap-fills the same way — a silent stretch between two
-// live buckets is scored as zero-count anomalies when the stream resumes.
 func TestGapFillStreaming(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	job := jobspec.Job{Name: "gs", BucketSpan: time.Minute,
@@ -94,7 +87,7 @@ func TestGapFillStreaming(t *testing.T) {
 	for b := 0; b < 40; b++ {
 		feed(b, 100)
 	}
-	// Skip buckets 40..44 entirely, then resume at 45 — the jump closes the gap.
+
 	for b := 45; b < 50; b++ {
 		feed(b, 100)
 	}

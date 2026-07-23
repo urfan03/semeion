@@ -13,24 +13,18 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// LokiSource reads log lines from Grafana Loki (`/loki/api/v1/query_range`) so
-// the categorization detector can run over Loki-stored logs — the same role the
-// Elasticsearch source plays, for the Loki stack.
 type LokiSource struct {
-	BaseURL string // e.g. http://localhost:3100
-	Query   string // LogQL, e.g. {app="checkout"}
-	Limit   int    // max lines per request (default 5000)
+	BaseURL string
+	Query   string
+	Limit   int
 	HTTP    *http.Client
-	OrgID   string // optional X-Scope-OrgID (multi-tenant)
+	OrgID   string
 }
 
-// NewLokiSource builds a Loki source with the default HTTP client.
 func NewLokiSource(baseURL, query string) *LokiSource {
 	return &LokiSource{BaseURL: baseURL, Query: query, Limit: 5000, HTTP: http.DefaultClient}
 }
 
-// FetchLogs returns the log lines in [start, end]; stream labels become the
-// line's dimension Fields (service, level, …).
 func (l *LokiSource) FetchLogs(ctx context.Context, start, end time.Time) ([]core.LogLine, error) {
 	limit := l.Limit
 	if limit <= 0 {
@@ -72,7 +66,7 @@ func parseLokiStreams(body []byte) ([]core.LogLine, error) {
 			ResultType string `json:"resultType"`
 			Result     []struct {
 				Stream map[string]string `json:"stream"`
-				Values [][]string        `json:"values"` // [ [ "<ns>", "<line>" ], … ]
+				Values [][]string        `json:"values"`
 			} `json:"result"`
 		} `json:"data"`
 	}

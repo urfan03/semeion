@@ -30,7 +30,7 @@ func TestPromParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 2 valid on web-1 (NaN dropped) + 1 on web-2 = 3.
+
 	if len(pts) != 3 {
 		t.Fatalf("expected 3 points, got %d", len(pts))
 	}

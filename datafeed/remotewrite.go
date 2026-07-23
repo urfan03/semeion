@@ -9,27 +9,11 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// Prometheus remote-write receiver — a PUSH datafeed. Prometheus (or an agent)
-// can `remote_write` straight to semeion, no scraping loop. The payload is a
-// Snappy-BLOCK-compressed protobuf WriteRequest; both the decompressor and the
-// protobuf decoder are hand-rolled here so semeion keeps its "single binary, no
-// dependencies" promise.
-//
-// Wire schema (prometheus/prompb):
-//   WriteRequest { repeated TimeSeries timeseries = 1 }
-//   TimeSeries   { repeated Label labels = 1; repeated Sample samples = 2 }
-//   Label        { string name = 1; string value = 2 }
-//   Sample       { double value = 1; int64 timestamp = 2 }  // timestamp in ms
-
-// Sample is one decoded remote-write point tagged with its metric name.
 type Sample struct {
 	Metric string
 	Point  core.DataPoint
 }
 
-// ParseRemoteWrite decompresses a Snappy-block body and decodes the protobuf
-// WriteRequest into samples. Each series' non-__name__ labels become the point's
-// Fields (dimensions); the metric name comes from __name__.
 func ParseRemoteWrite(body []byte) ([]Sample, error) {
 	raw, err := snappyDecode(body)
 	if err != nil {
@@ -37,8 +21,6 @@ func ParseRemoteWrite(body []byte) ([]Sample, error) {
 	}
 	return decodeWriteRequest(raw)
 }
-
-// ── protobuf decode ──────────────────────────────────────────────────────────
 
 func decodeWriteRequest(buf []byte) ([]Sample, error) {
 	var out []Sample
@@ -48,7 +30,7 @@ func decodeWriteRequest(buf []byte) ([]Sample, error) {
 		if err != nil {
 			return nil, err
 		}
-		if field == 1 && wire == 2 { // timeseries
+		if field == 1 && wire == 2 {
 			ts, err := p.bytes()
 			if err != nil {
 				return nil, err
@@ -81,7 +63,7 @@ func decodeTimeSeries(buf []byte) ([]Sample, error) {
 			return nil, err
 		}
 		switch {
-		case field == 1 && wire == 2: // Label
+		case field == 1 && wire == 2:
 			lb, err := p.bytes()
 			if err != nil {
 				return nil, err
@@ -91,7 +73,7 @@ func decodeTimeSeries(buf []byte) ([]Sample, error) {
 				return nil, err
 			}
 			labels[name] = value
-		case field == 2 && wire == 2: // Sample
+		case field == 2 && wire == 2:
 			sb, err := p.bytes()
 			if err != nil {
 				return nil, err
@@ -161,13 +143,13 @@ func decodeSample(buf []byte) (value float64, tsms int64, err error) {
 			return 0, 0, e
 		}
 		switch {
-		case field == 1 && wire == 1: // double (fixed64)
+		case field == 1 && wire == 1:
 			bits, e := p.fixed64()
 			if e != nil {
 				return 0, 0, e
 			}
 			value = math.Float64frombits(bits)
-		case field == 2 && wire == 0: // int64 timestamp (varint, ms)
+		case field == 2 && wire == 0:
 			v, e := p.varint()
 			if e != nil {
 				return 0, 0, e
@@ -182,7 +164,6 @@ func decodeSample(buf []byte) (value float64, tsms int64, err error) {
 	return value, tsms, nil
 }
 
-// pbReader is a minimal protobuf wire reader.
 type pbReader struct {
 	buf []byte
 	pos int

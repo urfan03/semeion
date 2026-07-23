@@ -14,7 +14,6 @@ func TestMetricsExposition(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
 
-	// Put something in a few stores.
 	do(t, h, http.MethodPost, "/v1/jobs",
 		`{"job":{"name":"lat","bucket_span":"1m","detectors":[{"function":"mean","field":"value","side":"high"}]}}`)
 	do(t, h, http.MethodPost, "/v1/changes", `{"name":"svc v1","kind":"deploy"}`)
@@ -73,8 +72,6 @@ func TestMetricsReflectIngestAndAlerts(t *testing.T) {
 	}
 }
 
-// The exposition must escape label values so a job name with a quote can't break
-// the format.
 func TestMetricsEscapesLabels(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()

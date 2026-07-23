@@ -11,8 +11,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// ReadLogCSV loads log lines from a CSV with a header row: a timestamp column
-// and a message column (by name). Any other column becomes a dimension field.
 func ReadLogCSV(path, timeCol, msgCol string) ([]core.LogLine, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -22,7 +20,7 @@ func ReadLogCSV(path, timeCol, msgCol string) ([]core.LogLine, error) {
 
 	r := csv.NewReader(f)
 	r.TrimLeadingSpace = true
-	r.FieldsPerRecord = -1 // messages may contain commas within quotes; be lenient
+	r.FieldsPerRecord = -1
 	header, err := r.Read()
 	if err != nil {
 		return nil, fmt.Errorf("read header: %w", err)
@@ -73,9 +71,6 @@ func ReadLogCSV(path, timeCol, msgCol string) ([]core.LogLine, error) {
 	return out, nil
 }
 
-// SyntheticLogs builds a deterministic log stream for the demo: two steady
-// templates, a brand-new template injected near the end, and a spike of the
-// steady template — so new / spike detection both trigger.
 func SyntheticLogs(start time.Time, span time.Duration, buckets int) []core.LogLine {
 	var out []core.LogLine
 	add := func(i, n int, msg string) {

@@ -9,8 +9,6 @@ import (
 	"github.com/urfan03/semeion/model"
 )
 
-// backfit should recover known additive components (up to a zero-mean shift
-// absorbed into the level) from a clean two-seasonal series.
 func TestBackfitRecoversComponents(t *testing.T) {
 	p1, p2 := 12, 7
 	trueC1 := make([]float64, p1)
@@ -19,7 +17,7 @@ func TestBackfitRecoversComponents(t *testing.T) {
 		trueC1[i] = 10 * math.Sin(2*math.Pi*float64(i)/float64(p1))
 	}
 	for i := range trueC2 {
-		trueC2[i] = float64(i) - 3 // -3..3, zero-mean
+		trueC2[i] = float64(i) - 3
 	}
 	var hist []float64
 	var bkts []int64
@@ -44,8 +42,6 @@ func TestBackfitRecoversComponents(t *testing.T) {
 	}
 }
 
-// A genuine second period removes materially more residual variance than the
-// single-period fit; a spurious/absent second period removes ~nothing.
 func TestSeasonalResidualVarianceGain(t *testing.T) {
 	p1, p2 := 12, 7
 	var hist []float64
@@ -62,8 +58,7 @@ func TestSeasonalResidualVarianceGain(t *testing.T) {
 		t.Fatalf("real weekly period should reduce residual variance by >= %.0f%%, got %.1f%%",
 			multiMinGain*100, gain*100)
 	}
-	// Adding a second period that carries no independent signal (a single-cycle
-	// series) yields little gain.
+
 	var single []float64
 	var sbkt []int64
 	for i := 0; i < 420; i++ {
@@ -77,13 +72,10 @@ func TestSeasonalResidualVarianceGain(t *testing.T) {
 	}
 }
 
-// End-to-end: a series with two independent cycles (12 and 7) activates the
-// two-component model, and a value that is normal for its daily phase but wrong
-// once the weekly component is accounted for is flagged.
 func TestMultiSeasonalModelActivatesAndCatchesCombined(t *testing.T) {
 	p1, p2 := 12, 7
 	span := time.Hour
-	t0 := time.Unix(0, 0).UTC() // bucket index 0 → model phase == i % period
+	t0 := time.Unix(0, 0).UTC()
 	val := func(i int) float64 {
 		return 100 + 14*math.Sin(2*math.Pi*float64(i)/float64(p1)) + 18*float64((i%p2))
 	}
@@ -95,13 +87,12 @@ func TestMultiSeasonalModelActivatesAndCatchesCombined(t *testing.T) {
 		t.Skipf("detector did not surface two independent periods (period=%d, period2=%d); machinery covered by unit tests",
 			m.Period(), m.Period2())
 	}
-	// Feed a value at a peak-weekly phase (i%7 == 6) but at the daily-only level,
-	// omitting the large weekly component — the combined model should flag it.
+
 	i := 500
 	for i%p2 != p2-1 {
 		i++
 	}
-	dailyOnly := 100 + 14*math.Sin(2*math.Pi*float64(i)/float64(p1)) // no +18*6 weekly bump
+	dailyOnly := 100 + 14*math.Sin(2*math.Pi*float64(i)/float64(p1))
 	_, score, _, _ := m.Observe(t0.Add(time.Duration(i)*span), dailyOnly)
 	if score < 50 {
 		t.Fatalf("a value missing its weekly component should score anomalous, got %.1f", score)

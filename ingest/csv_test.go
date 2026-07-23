@@ -24,7 +24,7 @@ func TestParseCSV(t *testing.T) {
 	if pts[0].Fields["host"] != "web-1" {
 		t.Fatalf("dim host[0]: got %q", pts[0].Fields["host"])
 	}
-	// Third row uses a Unix-epoch timestamp — must parse without error.
+
 	if pts[2].Time.IsZero() {
 		t.Fatal("epoch time did not parse")
 	}

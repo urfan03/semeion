@@ -25,7 +25,6 @@ func TestIncidentsCorrelateStoredResultsWithAChange(t *testing.T) {
 	s.Store("checkout-errors", []core.BucketResult{recordAt(base.Add(2*time.Minute), "count", "checkout", 90)})
 	s.Store("cart-latency", []core.BucketResult{recordAt(base.Add(4*time.Minute), "mean(latency)", "cart", 70)})
 
-	// A CI pipeline posts the deploy.
 	body, _ := json.Marshal(correlate.Change{
 		Time: base, Name: "checkout v2.3.1", Kind: "deploy",
 		Labels: map[string]string{"service": "checkout"},
@@ -102,8 +101,6 @@ func TestChangesRequireAName(t *testing.T) {
 	}
 }
 
-// A change posted without a timestamp is happening now — that is the normal
-// case for a CI hook, and it must not land at the zero time.
 func TestChangeDefaultsToNow(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()

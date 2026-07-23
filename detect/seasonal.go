@@ -8,60 +8,42 @@ import (
 	"github.com/urfan03/semeion/model"
 )
 
-// Seasonal detection tuning.
 const (
-	seasonalMinHistory  = 40   // observations before the first period detection
-	seasonalRedetect    = 300  // re-run period detection every N observations
-	seasonalPhaseWarmup = 4    // per-phase warm-up (phases see 1 sample/period)
-	seasonalMaxHistory  = 6000 // bounded history for detection + replay
+	seasonalMinHistory  = 40
+	seasonalRedetect    = 300
+	seasonalPhaseWarmup = 4
+	seasonalMaxHistory  = 6000
 )
 
-// multiMinGain is the fraction of residual variance a second period must remove
-// (beyond the single-period fit) to earn its own component — the guard that
-// admits a genuine independent cycle (weekly on daily) and rejects a harmonic.
 const multiMinGain = 0.10
 
-// SeasonalModel is a seasonality-aware baseline: once a period is discovered
-// (via the model.Provider), it keeps a separate baseline per phase (index mod
-// period), so a value is scored against what's normal FOR ITS TIME-OF-CYCLE —
-// catching a daytime trough or a midnight spike that a global baseline misses.
-// Until a period is found it behaves like a plain Model.
 type SeasonalModel struct {
 	side   jobspec.Side
 	prov   model.Provider
 	global *Model
-	span   time.Duration // bucket span, for timestamp→bucket-index phase
+	span   time.Duration
 
-	history []float64 // recent values
-	histBkt []int64   // absolute bucket index of each history value (parallel)
-	idx     int       // count of observations seen
+	history []float64
+	histBkt []int64
+	idx     int
 
 	period      int
 	phases      []*Model
 	sinceDetect int
-	last        *Model // the phase (or global) model used by the most recent Observe
+	last        *Model
 
-	// Multi-seasonality: when a second, independent period is found (e.g. daily
-	// AND weekly), the value is modelled as level + comp1[phase1] + comp2[phase2]
-	// (an additive two-component decomposition, back-fitted from history) and the
-	// RESIDUAL is scored by resid. This catches an anomaly that only shows up once
-	// both cycles are accounted for (a normal Monday level on the wrong hour).
 	period2      int
 	level        float64
 	comp1        []float64
 	comp2        []float64
 	resid        *Model
-	lastExpected float64 // expected value of the most recent multi-seasonal Observe
+	lastExpected float64
 }
 
-// multiActive reports whether the two-component seasonal decomposition is in use.
 func (m *SeasonalModel) multiActive() bool {
 	return m.period2 >= 2 && len(m.comp1) == m.period && len(m.comp2) == m.period2 && m.resid != nil
 }
 
-// Bounds returns the typical range: for the multi-seasonal path it is the
-// expected value (level + both components) ± the residual scale; otherwise it is
-// the phase model's own band (time-of-cycle baseline).
 func (m *SeasonalModel) Bounds(z float64) (lower, upper float64) {
 	if m.multiActive() {
 		rl, ru := m.resid.Bounds(z)
@@ -73,9 +55,6 @@ func (m *SeasonalModel) Bounds(z float64) (lower, upper float64) {
 	return m.last.Bounds(z)
 }
 
-// NewSeasonalModel builds a seasonality-aware model. span is the job's bucket
-// span, used to derive a value's phase from its TIMESTAMP (not its arrival
-// order), so a missing/late bucket no longer shifts every later phase baseline.
 func NewSeasonalModel(side jobspec.Side, prov model.Provider, span time.Duration) *SeasonalModel {
 	if prov == nil {
 		prov = model.NewGoProvider()
@@ -86,14 +65,10 @@ func NewSeasonalModel(side jobspec.Side, prov model.Provider, span time.Duration
 	return &SeasonalModel{side: side, prov: prov, global: NewModel(side), span: span}
 }
 
-// bucketIndex maps a timestamp to an absolute bucket number, so phase =
-// bucketIndex % period is anchored to wall-clock time.
 func (m *SeasonalModel) bucketIndex(t time.Time) int64 {
 	return t.UnixNano() / int64(m.span)
 }
 
-// Observe scores value (at bucket time t) against its phase baseline (or the
-// global baseline before a period is known), then folds it in.
 func (m *SeasonalModel) Observe(t time.Time, value float64) (prob, score, typical float64, dir core.Direction) {
 	m.idx++
 	m.sinceDetect++
@@ -108,7 +83,7 @@ func (m *SeasonalModel) Observe(t time.Time, value float64) (prob, score, typica
 		exp := m.expected(bkt)
 		m.lastExpected = exp
 		prob, score, _, dir = m.resid.Observe(value - exp)
-		typical = exp // report the model's expected value, not the residual baseline
+		typical = exp
 	} else if m.period >= 2 && len(m.phases) == m.period {
 		ph := int(((bkt % int64(m.period)) + int64(m.period)) % int64(m.period))
 		m.last = m.phases[ph]
@@ -128,11 +103,6 @@ func (m *SeasonalModel) Observe(t time.Time, value float64) (prob, score, typica
 	return prob, score, typical, dir
 }
 
-// detect runs period discovery on the accumulated history. When TWO independent
-// periods are present (e.g. daily + weekly, not harmonics of one another) it
-// builds an additive two-component decomposition and scores residuals; otherwise
-// it falls back to single-period phase baselines, rebuilt by replaying history
-// (each value keyed by its absolute bucket index, so gaps don't misalign phases).
 func (m *SeasonalModel) detect() {
 	m.sinceDetect = 0
 	periods := m.prov.DetectSeasonality(m.history)
@@ -144,13 +114,7 @@ func (m *SeasonalModel) detect() {
 		return
 	}
 	p1 := cands[0]
-	// A strong primary cycle dominates the autocorrelation and MASKS a weaker
-	// second one (a big weekly sawtooth hides a smaller daily sine). So DEFLATE:
-	// remove p1's seasonal component and re-run detection on the residual to
-	// surface the independent second period. It then earns its own component only
-	// if it materially reduces the residual variance beyond the single-period fit
-	// — which both confirms it's real and rejects a mere harmonic/alias (48 on 24
-	// explains ~nothing new), with no fragile integer-multiple heuristic.
+
 	_, c1, _ := backfit(m.history, m.histBkt, p1, 0)
 	resid := make([]float64, len(m.history))
 	for j, v := range m.history {
@@ -175,7 +139,7 @@ func (m *SeasonalModel) detect() {
 	if p1 == m.period && !m.multiActive() {
 		return
 	}
-	// Single-period phase modelling.
+
 	m.period, m.period2 = p1, 0
 	m.comp1, m.comp2, m.resid = nil, nil, nil
 	m.phases = make([]*Model, p1)
@@ -188,12 +152,9 @@ func (m *SeasonalModel) detect() {
 	}
 }
 
-// setupMulti back-fits the additive decomposition level + comp1 + comp2 from
-// history and seeds the residual model, so a value is scored against what both
-// cycles predict for its (phase1, phase2).
 func (m *SeasonalModel) setupMulti(p1, p2 int) {
 	if p1 == m.period && p2 == m.period2 {
-		return // unchanged — keep the online-adapted residual model
+		return
 	}
 	m.period, m.period2 = p1, p2
 	m.phases = nil
@@ -204,8 +165,6 @@ func (m *SeasonalModel) setupMulti(p1, p2 int) {
 	}
 }
 
-// expected is the model's predicted value for a bucket index (level + both
-// seasonal components at their phases).
 func (m *SeasonalModel) expected(bkt int64) float64 { return m.expectedAt(bkt) }
 
 func (m *SeasonalModel) expectedAt(bkt int64) float64 {
@@ -223,11 +182,6 @@ func phaseOf(bkt int64, p int) int {
 	return int(((bkt % int64(p)) + int64(p)) % int64(p))
 }
 
-// backfit estimates an additive seasonal decomposition value ≈ level +
-// c1[phase1] + c2[phase2] by iterative back-fitting: hold one component fixed,
-// re-estimate the other as the mean residual per phase, center it to zero mean,
-// and repeat. A few passes converge for two well-separated periods. When p2 < 2
-// it degenerates to a single-component (per-phase mean) fit.
 func backfit(hist []float64, bkts []int64, p1, p2 int) (level float64, c1, c2 []float64) {
 	c1 = make([]float64, p1)
 	if p2 >= 2 {
@@ -263,7 +217,7 @@ func backfit(hist []float64, bkts []int64, p1, p2 int) (level float64, c1, c2 []
 		}
 		mean /= float64(pn)
 		for i := range comp {
-			comp[i] -= mean // keep each component zero-mean; the level absorbs it
+			comp[i] -= mean
 		}
 	}
 	passes := 1
@@ -279,9 +233,6 @@ func backfit(hist []float64, bkts []int64, p1, p2 int) (level float64, c1, c2 []
 	return level, c1, c2
 }
 
-// seasonalResidualVar is the variance of the residual after removing the
-// additive fit (level + c1[+ c2]) — the yardstick the variance-gain test uses to
-// decide whether a second period earns its own component.
 func seasonalResidualVar(hist []float64, bkts []int64, p1, p2 int) float64 {
 	if len(hist) == 0 {
 		return 0
@@ -305,8 +256,6 @@ func seasonalResidualVar(hist []float64, bkts []int64, p1, p2 int) float64 {
 	return s2/n - mean*mean
 }
 
-// candidatePeriods returns the detected periods that are usable as a cycle length
-// (≥2 and ≤ ⅓ of history), de-duplicated, in the detector's prominence order.
 func candidatePeriods(periods []int, histLen int) []int {
 	seen := make(map[int]bool)
 	out := make([]int, 0, len(periods))
@@ -319,11 +268,8 @@ func candidatePeriods(periods []int, histLen int) []int {
 	return out
 }
 
-// Count is how many observations have been seen.
 func (m *SeasonalModel) Count() int { return m.idx }
 
-// Period returns the primary detected period (0 if none yet).
 func (m *SeasonalModel) Period() int { return m.period }
 
-// Period2 returns the second, independent seasonal period (0 if single-cycle).
 func (m *SeasonalModel) Period2() int { return m.period2 }

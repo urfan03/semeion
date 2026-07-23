@@ -7,12 +7,8 @@ import (
 	"github.com/urfan03/semeion/stats"
 )
 
-const distRefitEvery = 200 // re-fit the distribution every N observations
+const distRefitEvery = 200
 
-// DistributionModel scores a value by its two-sided tail probability under a
-// best-fit distribution (normal / lognormal / exponential / poisson), rather
-// than a Gaussian z-score — accurate for skewed or count data. The distribution
-// is re-fit periodically from the recent window.
 type DistributionModel struct {
 	side     jobspec.Side
 	prov     model.Provider
@@ -23,7 +19,6 @@ type DistributionModel struct {
 	sinceFit int
 }
 
-// NewDistributionModel builds a distribution-based model.
 func NewDistributionModel(side jobspec.Side, prov model.Provider) *DistributionModel {
 	if prov == nil {
 		prov = model.NewGoProvider()
@@ -31,7 +26,6 @@ func NewDistributionModel(side jobspec.Side, prov model.Provider) *DistributionM
 	return &DistributionModel{side: side, prov: prov, window: defaultWindow, warmup: defaultWarmup}
 }
 
-// Observe scores value under the fitted distribution, then folds it in.
 func (m *DistributionModel) Observe(value float64) (prob, score, typical float64, dir core.Direction) {
 	if len(m.history) < m.warmup {
 		m.push(value)
@@ -50,7 +44,7 @@ func (m *DistributionModel) Observe(value float64) (prob, score, typical float64
 	}
 
 	prob = m.dist.Tail(value)
-	// One-sided detectors ignore the "safe" direction.
+
 	if (m.side == jobspec.SideHigh && dir == core.DirDown) ||
 		(m.side == jobspec.SideLow && dir == core.DirUp) {
 		prob = 1
@@ -67,5 +61,4 @@ func (m *DistributionModel) push(v float64) {
 	}
 }
 
-// Family returns the currently fitted distribution family ("" until fit).
 func (m *DistributionModel) Family() string { return m.dist.Family }

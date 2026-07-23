@@ -2,8 +2,6 @@ package model
 
 import "testing"
 
-// Symmetric data with negatives leaves only the normal candidate; its tail is
-// ~1 at the centre and tiny far out.
 func TestFitNormalAndTail(t *testing.T) {
 	x := []float64{-3, -2, -1, 0, 1, 2, 3, -2.5, 2.5, -1.5, 1.5, 0.5, -0.5}
 	d := NewGoProvider().FitDistribution(x)
@@ -19,12 +17,8 @@ func TestFitNormalAndTail(t *testing.T) {
 	}
 }
 
-// Exponential is used as a fit to positive metric data whose normal range sits
-// around the mean (1/rate). C3 regression: a collapse toward zero (an outage) is
-// anomalous — the two-sided tail must flag it, consistent with lognormal/normal.
-// A one-sided (high) detector suppresses the low direction upstream, not here.
 func TestExponentialTailTwoSided(t *testing.T) {
-	d := Distribution{Family: "exponential", Params: []float64{1}} // mean 1
+	d := Distribution{Family: "exponential", Params: []float64{1}}
 	if p := d.Tail(0); p > 0.05 {
 		t.Fatalf("x=0 (an outage) must be extreme for a metric, got %.3f", p)
 	}
@@ -36,9 +30,8 @@ func TestExponentialTailTwoSided(t *testing.T) {
 	}
 }
 
-// A clearly right-skewed positive sample selects a skewed family (not normal).
 func TestFitSkewedPrefersNonNormal(t *testing.T) {
-	// Mostly small positive values with a long right tail.
+
 	x := []float64{1, 1, 2, 1, 3, 2, 1, 1, 2, 1, 1, 40, 1, 2, 1, 1, 3, 1, 2, 1}
 	d := NewGoProvider().FitDistribution(x)
 	if d.Family == "normal" {

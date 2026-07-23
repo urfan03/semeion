@@ -7,17 +7,6 @@ import (
 	"github.com/urfan03/semeion/model"
 )
 
-// This file adds snapshot/restore for the non-plain model families (seasonal,
-// distribution, multivariate) so a running detector survives a restart with ALL
-// of its learned state, not just the plain z-score path. Every field that
-// carries learned state is persisted; derived quantities (mean/cov, fitted
-// distribution) are recomputed on the next Observe.
-
-// ── SeasonalModel ────────────────────────────────────────────────────────────
-
-// SeasonalState persists a SeasonalModel: the global baseline (used before a
-// period is found), the per-phase baselines (after), and the history/counters
-// needed for future re-detection.
 type SeasonalState struct {
 	Side        jobspec.Side  `json:"side"`
 	Span        time.Duration `json:"span"`
@@ -28,8 +17,7 @@ type SeasonalState struct {
 	SinceDetect int           `json:"since_detect"`
 	Global      ModelState    `json:"global"`
 	Phases      []ModelState  `json:"phases,omitempty"`
-	// Multi-seasonal decomposition (present only when two independent periods were
-	// found), so daily+weekly modelling survives a restart instead of cold-starting.
+
 	Period2 int         `json:"period2,omitempty"`
 	Level   float64     `json:"level,omitempty"`
 	Comp1   []float64   `json:"comp1,omitempty"`
@@ -37,7 +25,6 @@ type SeasonalState struct {
 	Resid   *ModelState `json:"resid,omitempty"`
 }
 
-// State returns a copy of the seasonal model's learned state.
 func (m *SeasonalModel) State() SeasonalState {
 	s := SeasonalState{
 		Side:        m.side,
@@ -63,7 +50,6 @@ func (m *SeasonalModel) State() SeasonalState {
 	return s
 }
 
-// SeasonalFromState rebuilds a SeasonalModel from a persisted state.
 func SeasonalFromState(s SeasonalState, prov model.Provider) *SeasonalModel {
 	if prov == nil {
 		prov = model.NewGoProvider()
@@ -96,10 +82,6 @@ func SeasonalFromState(s SeasonalState, prov model.Provider) *SeasonalModel {
 	return m
 }
 
-// ── DistributionModel ────────────────────────────────────────────────────────
-
-// DistributionState persists a DistributionModel: its window, the fitted
-// distribution, and the recent history the next refit uses.
 type DistributionState struct {
 	Side     jobspec.Side       `json:"side"`
 	Window   int                `json:"window"`
@@ -109,7 +91,6 @@ type DistributionState struct {
 	SinceFit int                `json:"since_fit"`
 }
 
-// State returns a copy of the distribution model's learned state.
 func (m *DistributionModel) State() DistributionState {
 	return DistributionState{
 		Side:     m.side,
@@ -121,7 +102,6 @@ func (m *DistributionModel) State() DistributionState {
 	}
 }
 
-// DistributionFromState rebuilds a DistributionModel from a persisted state.
 func DistributionFromState(s DistributionState, prov model.Provider) *DistributionModel {
 	if prov == nil {
 		prov = model.NewGoProvider()
@@ -143,10 +123,6 @@ func DistributionFromState(s DistributionState, prov model.Provider) *Distributi
 	}
 }
 
-// ── MultivariateModel ────────────────────────────────────────────────────────
-
-// MultivariateState persists a MultivariateModel: the vectors it has learned
-// (mean/covariance are recomputed each Observe, so only history is needed).
 type MultivariateState struct {
 	K       int         `json:"k"`
 	Window  int         `json:"window"`
@@ -154,7 +130,6 @@ type MultivariateState struct {
 	History [][]float64 `json:"history,omitempty"`
 }
 
-// State returns a copy of the multivariate model's learned state.
 func (m *MultivariateModel) State() MultivariateState {
 	hist := make([][]float64, len(m.history))
 	for i, row := range m.history {
@@ -163,7 +138,6 @@ func (m *MultivariateModel) State() MultivariateState {
 	return MultivariateState{K: m.k, Window: m.window, Warmup: m.warmup, History: hist}
 }
 
-// MultivariateFromState rebuilds a MultivariateModel from a persisted state.
 func MultivariateFromState(s MultivariateState) *MultivariateModel {
 	if s.Window <= 0 {
 		s.Window = defaultWindow

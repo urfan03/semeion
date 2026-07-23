@@ -8,9 +8,6 @@ import (
 	"github.com/urfan03/semeion/correlate"
 )
 
-// C6 regression: a change that lands AFTER symptoms began is a remediation, not
-// a cause. It must not be recommended for rollback, and the brief must not claim
-// it "preceded" the incident.
 func TestMidIncidentChangeNotRecommendedForRollback(t *testing.T) {
 	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	inc := correlate.Incident{
@@ -18,7 +15,7 @@ func TestMidIncidentChangeNotRecommendedForRollback(t *testing.T) {
 		Symptoms: []correlate.Symptom{{Job: "errors", Time: base, Score: 90,
 			Entities: map[string]string{"service": "checkout"}}},
 		Jobs: []string{"errors"},
-		// The change is the "lead" candidate here, but it happened 9 minutes in.
+
 		RootCause: []correlate.Candidate{{
 			Change:     &correlate.Change{Name: "checkout hotfix", Kind: "deploy", Time: base.Add(9 * time.Minute)},
 			Confidence: 1.0,
@@ -36,7 +33,6 @@ func TestMidIncidentChangeNotRecommendedForRollback(t *testing.T) {
 	}
 }
 
-// A change that genuinely preceded the onset still earns a rollback.
 func TestPrecedingChangeStillRecommendsRollback(t *testing.T) {
 	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	inc := correlate.Incident{

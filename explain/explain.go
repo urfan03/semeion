@@ -1,12 +1,3 @@
-// Package explain turns a ranked incident into a human-readable brief and a set
-// of concrete, evidence-derived remediation steps.
-//
-// Everything here is deterministic and traceable: each sentence and each
-// recommended action cites the evidence that produced it. Nothing is inferred
-// that the correlation engine did not already establish — this package does not
-// detect, it phrases. An LLM may rewrite the Narrative into nicer prose via the
-// Narrator seam, but the Brief (the structured facts) is always the source of
-// truth and is produced with zero dependencies.
 package explain
 
 import (
@@ -18,9 +9,6 @@ import (
 	"github.com/urfan03/semeion/correlate"
 )
 
-// Brief is the structured, deterministic explanation of an incident. It is the
-// contract handed to a Narrator (or straight to a UI); it never contains
-// anything not grounded in the incident's evidence.
 type Brief struct {
 	IncidentID string    `json:"incident_id"`
 	Headline   string    `json:"headline"`
@@ -33,21 +21,18 @@ type Brief struct {
 	End        time.Time `json:"end"`
 }
 
-// Cause is the leading root-cause hypothesis, stated plainly.
 type Cause struct {
-	Kind   string `json:"kind"`   // change | service | log | metric | unknown
-	Target string `json:"target"` // what to look at first
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// Action is one recommended step, with the evidence that justifies it.
 type Action struct {
 	Title     string `json:"title"`
 	Rationale string `json:"rationale"`
-	Priority  int    `json:"priority"` // 1 = do first
+	Priority  int    `json:"priority"`
 }
 
-// Explain produces the deterministic brief for an incident.
 func Explain(inc correlate.Incident) Brief {
 	b := Brief{
 		IncidentID: inc.ID,
@@ -71,7 +56,6 @@ func Explain(inc correlate.Incident) Brief {
 	return b
 }
 
-// causeOf classifies the leading candidate into an actionable cause.
 func causeOf(c correlate.Candidate) Cause {
 	if c.Change != nil {
 		return Cause{Kind: "change", Target: c.Change.Name, Detail: c.Change.Kind}
@@ -103,15 +87,9 @@ func headline(inc correlate.Incident, c Cause) string {
 	}
 }
 
-// actions derives the recommended steps from the evidence, most urgent first.
-// Every action names why it is recommended; none is generic filler.
 func actions(inc correlate.Incident, lead correlate.Candidate) []Action {
 	var out []Action
 
-	// A deliberate change is the most actionable finding — but only recommend a
-	// rollback when the change actually PRECEDED the symptoms. A change during
-	// the incident is a likely remediation; telling the operator to roll back the
-	// fix would be actively harmful, so never fabricate "preceding".
 	if lead.Change != nil && changePrecedes(inc, lead.Change.Time) {
 		out = append(out, Action{
 			Priority:  1,
@@ -120,7 +98,6 @@ func actions(inc correlate.Incident, lead correlate.Candidate) []Action {
 		})
 	}
 
-	// A topological origin: investigate it and expect the rest to clear.
 	if svc := lead.Symptom.Entities["service"]; svc != "" && upstreamReason(lead.Reasons) != "" {
 		out = append(out, Action{
 			Priority:  len(out) + 1,
@@ -129,7 +106,6 @@ func actions(inc correlate.Incident, lead correlate.Candidate) []Action {
 		})
 	}
 
-	// A novel log template: read it, it usually names the failure.
 	for _, c := range inc.RootCause {
 		if (c.Symptom.Kind == "new" || c.Symptom.Kind == "rare") && c.Symptom.Template != "" {
 			out = append(out, Action{
@@ -142,7 +118,7 @@ func actions(inc correlate.Incident, lead correlate.Candidate) []Action {
 	}
 
 	if len(out) == 0 {
-		// Fall back to the single most-defensible step: look at the leader.
+
 		t := firstNonEmpty(lead.Symptom.Entities["service"], lead.Symptom.Series, lead.Symptom.Job)
 		out = append(out, Action{
 			Priority:  1,
@@ -183,7 +159,6 @@ func narrate(inc correlate.Incident, c Cause, lead correlate.Candidate) string {
 	return b.String()
 }
 
-// evidence flattens the incident into an ordered chain of facts.
 func evidence(inc correlate.Incident) []string {
 	var ev []string
 	if len(inc.Changes) > 0 {
@@ -205,7 +180,7 @@ func evidence(inc correlate.Incident) []string {
 		}
 		ev = append(ev, fmt.Sprintf("#%d %s (%.0f%%): %s", i+1, what, c.Confidence*100, strings.Join(c.Reasons, "; ")))
 	}
-	// Stable order for the entity tallies.
+
 	if len(inc.Entities) > 0 {
 		keys := make([]string, 0, len(inc.Entities))
 		for k := range inc.Entities {
@@ -217,8 +192,6 @@ func evidence(inc correlate.Incident) []string {
 	return ev
 }
 
-// changePrecedes reports whether t is at or before the earliest symptom in the
-// incident — i.e. the change could actually have caused it.
 func changePrecedes(inc correlate.Incident, t time.Time) bool {
 	first := inc.End
 	for _, s := range inc.Symptoms {

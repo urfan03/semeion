@@ -12,10 +12,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// ReadCSV loads points from a CSV file with a header row. It needs a timestamp
-// column and a value column (by name); every other column becomes a string
-// dimension usable as a by/partition/influencer field. Timestamps are parsed as
-// RFC3339 or as a Unix epoch (seconds, or milliseconds when > 1e12).
 func ReadCSV(path, timeCol, valueCol string) ([]core.DataPoint, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -65,9 +61,7 @@ func parseCSV(rd io.Reader, timeCol, valueCol string) ([]core.DataPoint, error) 
 		if err != nil {
 			return nil, fmt.Errorf("row %d: value %q: %w", row, rec[vi], err)
 		}
-		// Every non-time column that parses as a number becomes a named metric in
-		// Values (so multivariate / per-field detectors work); the rest become
-		// string dimensions.
+
 		var dims map[string]string
 		var vals map[string]float64
 		for name, i := range idx {
@@ -98,7 +92,7 @@ func parseTime(s string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		if n > 1e12 { // milliseconds
+		if n > 1e12 {
 			return time.UnixMilli(n).UTC(), nil
 		}
 		return time.Unix(n, 0).UTC(), nil

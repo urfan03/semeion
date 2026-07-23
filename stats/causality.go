@@ -2,16 +2,6 @@ package stats
 
 import "math"
 
-// Causality primitives for root-cause ordering: when two metrics move together,
-// which one moved FIRST? Cross-correlation finds the lag that best aligns them
-// (a positive lead means A precedes B), and a Granger-style test asks whether A's
-// past genuinely improves the prediction of B beyond B's own past — turning "A
-// and B are correlated" into "A likely drives B", the ordering RCA needs.
-
-// CrossCorrelation returns the Pearson correlation of a and b at each integer lag
-// in [-maxLag, +maxLag]. Index i corresponds to lag = i - maxLag; a positive lag
-// aligns a[t] with b[t+lag] (a leads b). Series are compared over their
-// overlapping region at each lag; unequal lengths use the shorter.
 func CrossCorrelation(a, b []float64, maxLag int) []float64 {
 	n := len(a)
 	if len(b) < n {
@@ -27,7 +17,6 @@ func CrossCorrelation(a, b []float64, maxLag int) []float64 {
 	return out
 }
 
-// corrAtLag correlates a[t] with b[t+lag] over the valid overlap.
 func corrAtLag(a, b []float64, n, lag int) float64 {
 	var xs, ys []float64
 	for t := 0; t < n; t++ {
@@ -41,7 +30,6 @@ func corrAtLag(a, b []float64, n, lag int) float64 {
 	return pearson(xs, ys)
 }
 
-// pearson is the Pearson correlation coefficient of equal-length slices.
 func pearson(x, y []float64) float64 {
 	n := len(x)
 	if n < 2 || len(y) != n {
@@ -72,10 +60,6 @@ func meanOf(x []float64) float64 {
 	return s / float64(len(x))
 }
 
-// LeadLag returns the lag (within ±maxLag) at which a and b are most strongly
-// correlated and that peak correlation. A positive lag means a LEADS b (a's
-// movements precede b's by `lag` samples) — a's series is the earlier, more
-// likely upstream cause.
 func LeadLag(a, b []float64, maxLag int) (lag int, corr float64) {
 	cc := CrossCorrelation(a, b, maxLag)
 	best := 0
@@ -87,11 +71,6 @@ func LeadLag(a, b []float64, maxLag int) (lag int, corr float64) {
 	return best - maxLag, cc[best]
 }
 
-// Granger reports whether the past of a improves the one-step prediction of b
-// beyond b's own past (a bivariate, order-`order` Granger causality test). It
-// returns the fraction by which residual variance drops when a's lags are added
-// (0..1; higher = stronger evidence a drives b) and an F-like statistic. Needs
-// enough samples (> 3·order); returns zeros otherwise.
 func Granger(a, b []float64, order int) (improvement, fStat float64) {
 	n := len(a)
 	if len(b) < n {
@@ -100,8 +79,7 @@ func Granger(a, b []float64, order int) (improvement, fStat float64) {
 	if order < 1 || n <= 3*order+1 {
 		return 0, 0
 	}
-	// Build the design: predict b[t] from b[t-1..t-order] (restricted) and
-	// additionally a[t-1..t-order] (full).
+
 	var yRows []float64
 	var restr, full [][]float64
 	for t := order; t < n; t++ {
@@ -139,17 +117,13 @@ func Granger(a, b []float64, order int) (improvement, fStat float64) {
 	return improvement, fStat
 }
 
-// olsSSE fits y ~ X by ordinary least squares (normal equations, Gaussian
-// elimination) and returns the residual sum of squares. X rows are feature
-// vectors (including an intercept column). Singular systems return the
-// total sum of squares (no fit).
 func olsSSE(X [][]float64, y []float64) float64 {
 	m := len(X)
 	if m == 0 {
 		return 0
 	}
 	p := len(X[0])
-	// Normal equations: (XᵀX) β = Xᵀy.
+
 	xtx := make([][]float64, p)
 	xty := make([]float64, p)
 	for i := range xtx {
@@ -184,7 +158,6 @@ func olsSSE(X [][]float64, y []float64) float64 {
 	return sse
 }
 
-// solve solves Ax = b via Gaussian elimination with partial pivoting.
 func solve(A [][]float64, b []float64) ([]float64, bool) {
 	n := len(b)
 	m := make([][]float64, n)

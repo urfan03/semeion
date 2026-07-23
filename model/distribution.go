@@ -2,18 +2,12 @@ package model
 
 import "math"
 
-// Distribution is a fitted parametric model of a series' values. Anomaly
-// scoring can use its two-sided tail probability instead of a robust z-score,
-// which fits skewed / count data far better than a Gaussian assumption.
 type Distribution struct {
-	Family string    `json:"family"` // "normal" | "lognormal" | "exponential" | "poisson"
-	Params []float64 `json:"params"` // family-specific parameters
-	LogLik float64   `json:"loglik"` // maximised log-likelihood (for model choice)
+	Family string    `json:"family"`
+	Params []float64 `json:"params"`
+	LogLik float64   `json:"loglik"`
 }
 
-// Tail returns the two-sided extremeness probability of x under the fitted
-// distribution: p = 2·min(P(X≤x), P(X≥x)), clamped to (0,1]. Smaller = more
-// extreme. An empty/unknown distribution returns 1 (not anomalous).
 func (d Distribution) Tail(x float64) float64 {
 	var p float64
 	switch d.Family {
@@ -32,13 +26,7 @@ func (d Distribution) Tail(x float64) float64 {
 		lower := 0.5 * math.Erfc(-(math.Log(x)-mu)/(sd*math.Sqrt2))
 		p = 2 * math.Min(lower, 1-lower)
 	case "exponential":
-		// Two-sided, consistent with the other families: p = 2·min(P(X≤x),P(X≥x)).
-		// Exponential is used as a fit to POSITIVE metric data (latency, size,
-		// throughput) whose normal operating range sits around the mean, not at
-		// zero — so a collapse toward zero (an outage) IS anomalous and must score
-		// like it does under lognormal/normal. A one-sided (high) detector still
-		// suppresses the lower direction upstream, so genuine upper-tail-only use
-		// (inter-arrival times) is unaffected.
+
 		rate := d.Params[0]
 		if rate <= 0 {
 			return 1
@@ -46,8 +34,8 @@ func (d Distribution) Tail(x float64) float64 {
 		if x < 0 {
 			return 1
 		}
-		upper := math.Exp(-rate * x) // P(X ≥ x)
-		lower := 1 - upper           // P(X ≤ x)
+		upper := math.Exp(-rate * x)
+		lower := 1 - upper
 		p = 2 * math.Min(lower, upper)
 	case "poisson":
 		lambda := d.Params[0]
@@ -68,8 +56,6 @@ func (d Distribution) Tail(x float64) float64 {
 	return p
 }
 
-// fitDistribution selects the max-likelihood distribution among the candidates
-// applicable to the samples.
 func fitDistribution(x []float64) Distribution {
 	n := len(x)
 	if n < 4 {
@@ -88,12 +74,6 @@ func fitDistribution(x []float64) Distribution {
 		}
 	}
 
-	// Select by AIC = 2k − 2·logL (lower is better), so a 2-parameter family
-	// (normal, lognormal) must earn its extra parameter over a 1-parameter one
-	// (exponential, poisson) rather than winning on raw likelihood alone. AIC
-	// across a continuous density and a discrete pmf is still only a heuristic
-	// (different base measures), but it removes the parameter-count bias and
-	// matches standard practice.
 	best := Distribution{Family: "normal", Params: []float64{mean, sd}, LogLik: normalLogLik(x, mean, sd)}
 	bestAIC := aic(2, best.LogLik)
 	consider := func(fam string, k int, params []float64, ll float64) {
@@ -125,7 +105,6 @@ func fitDistribution(x []float64) Distribution {
 	return best
 }
 
-// aic is the Akaike information criterion: 2·params − 2·logLikelihood.
 func aic(k int, logLik float64) float64 {
 	return 2*float64(k) - 2*logLik
 }
@@ -185,17 +164,15 @@ func poissonLogLik(x []float64, lambda float64) float64 {
 	return ll
 }
 
-// poissonCDF returns P(X <= k) for a Poisson(lambda), summing terms (exact for
-// small k; a normal approximation for large lambda keeps it O(1)).
 func poissonCDF(k, lambda float64) float64 {
 	if k < 0 {
 		return 0
 	}
-	if lambda > 500 { // normal approximation with continuity correction
+	if lambda > 500 {
 		return 0.5 * math.Erfc(-((k+0.5)-lambda)/(math.Sqrt(lambda)*math.Sqrt2))
 	}
 	var sum, term float64
-	term = math.Exp(-lambda) // P(X=0)
+	term = math.Exp(-lambda)
 	sum = term
 	for i := 1.0; i <= k; i++ {
 		term *= lambda / i
@@ -207,7 +184,6 @@ func poissonCDF(k, lambda float64) float64 {
 	return sum
 }
 
-// logGamma is math.Lgamma without the sign return, for Poisson log-factorial.
 func logGamma(x float64) float64 {
 	v, _ := math.Lgamma(x)
 	return v

@@ -28,7 +28,7 @@ func TestESParseMetric(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The empty bucket (null value) is skipped → 2 points.
+
 	if len(pts) != 2 {
 		t.Fatalf("expected 2 points, got %d", len(pts))
 	}
@@ -42,7 +42,7 @@ func TestESParseCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// count uses doc_count for every bucket, including the empty one → 3 points.
+
 	if len(pts) != 3 {
 		t.Fatalf("expected 3 points, got %d", len(pts))
 	}
@@ -56,7 +56,7 @@ func TestESFetchHTTP(t *testing.T) {
 		if !strings.HasSuffix(r.URL.Path, "/_search") {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		// The request body must carry a date_histogram aggregation.
+
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if _, ok := body["aggs"]; !ok {

@@ -10,42 +10,35 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// Tuning (conservative, to keep false positives low).
 const (
-	catWarmup      = 20 // buckets before scoring begins
-	catMinNew      = 3  // a new template must occur >= this in its first bucket to fire
-	catRareMax     = 2  // a template seen in <= this many buckets total is "rare"
-	scoreNew       = 90 // fixed score for a brand-new template
-	scoreRare      = 65 // fixed score for a rare template
-	catMaxExamples = 4  // distinct example messages kept per category (Elastic ML keeps ~4)
+	catWarmup      = 20
+	catMinNew      = 3
+	catRareMax     = 2
+	scoreNew       = 90
+	scoreRare      = 65
+	catMaxExamples = 4
 )
 
-// Categorizer detects log anomalies: NEW templates ("an error type never seen
-// before"), RARE templates, and SPIKING templates ("this category is N× its
-// norm"). It groups messages with Drain and scores each template's per-bucket
-// count series with the shared robust model. Batch (Run) and streaming
-// (Push/Flush) share one scoring path; Snapshot/Restore persist all state.
 type Categorizer struct {
 	span       time.Duration
 	drain      *Drain
 	warmup     int
-	influencer string // optional dimension field for attribution (e.g. "service")
+	influencer string
 
-	models   map[int]*detect.Model // per-template spike model (keyed by cluster ID)
-	firstBkt map[int]time.Time     // first bucket a template appeared in
-	buckets  map[int]int           // distinct buckets a template appeared in (rarity)
-	sample   map[int]string        // the representative (first) example message per template
-	examples map[int][]string      // up to catMaxExamples distinct example messages per template
-	matches  map[int]int           // cumulative lines matched per template (num_matches)
-	suppress map[int]bool          // feedback: templates the operator muted
-	seen     int                   // buckets processed
+	models   map[int]*detect.Model
+	firstBkt map[int]time.Time
+	buckets  map[int]int
+	sample   map[int]string
+	examples map[int][]string
+	matches  map[int]int
+	suppress map[int]bool
+	seen     int
 
-	pending   map[time.Time][]core.LogLine // streaming buffer (open buckets)
+	pending   map[time.Time][]core.LogLine
 	watermark time.Time
 	hasMark   bool
 }
 
-// NewCategorizer builds a categorizer over the given bucket span.
 func NewCategorizer(span time.Duration) *Categorizer {
 	return &Categorizer{
 		span: span, drain: NewDrain(), warmup: catWarmup,
@@ -60,22 +53,14 @@ func NewCategorizer(span time.Duration) *Categorizer {
 	}
 }
 
-// WithInfluencer sets a dimension field (e.g. "service") to attribute anomalies
-// to; the dominant value among a template's lines is reported as an influencer.
 func (c *Categorizer) WithInfluencer(field string) *Categorizer { c.influencer = field; return c }
 
-// Drain exposes the underlying template store (for inspection / persistence).
 func (c *Categorizer) Drain() *Drain { return c.drain }
 
-// Suppress mutes a template — the feedback / active-suppression hook. A muted
-// template is never reported again (until un-suppressed).
 func (c *Categorizer) Suppress(templateID int) { c.suppress[templateID] = true }
 
-// Unsuppress re-enables reporting for a template.
 func (c *Categorizer) Unsuppress(templateID int) { delete(c.suppress, templateID) }
 
-// Run categorizes log lines (batch) and returns per-bucket anomaly records in
-// time order.
 func (c *Categorizer) Run(lines []core.LogLine, threshold float64) []core.BucketResult {
 	buckets := make(map[time.Time][]core.LogLine)
 	for _, l := range lines {
@@ -95,8 +80,6 @@ func (c *Categorizer) Run(lines []core.LogLine, threshold float64) []core.Bucket
 	return out
 }
 
-// Push buffers one log line (streaming). Buckets strictly older than the newest
-// bucket seen are closed and scored; their results are returned.
 func (c *Categorizer) Push(l core.LogLine, threshold float64) []core.BucketResult {
 	bt := l.Time.Truncate(c.span)
 	if !c.hasMark {
@@ -111,7 +94,6 @@ func (c *Categorizer) Push(l core.LogLine, threshold float64) []core.BucketResul
 	return out
 }
 
-// Flush closes and scores every remaining open bucket (end of stream).
 func (c *Categorizer) Flush(threshold float64) []core.BucketResult {
 	return c.closeBefore(time.Time{}, threshold)
 }
@@ -132,7 +114,6 @@ func (c *Categorizer) closeBefore(limit time.Time, threshold float64) []core.Buc
 	return out
 }
 
-// closeBucket scores one bucket and advances the bucket counter.
 func (c *Categorizer) closeBucket(bt time.Time, lines []core.LogLine, threshold float64) core.BucketResult {
 	br := c.scoreBucket(bt, lines, threshold)
 	c.seen++
@@ -142,7 +123,7 @@ func (c *Categorizer) closeBucket(bt time.Time, lines []core.LogLine, threshold 
 func (c *Categorizer) scoreBucket(bt time.Time, lines []core.LogLine, threshold float64) core.BucketResult {
 	counts := make(map[int]int)
 	cluster := make(map[int]*Cluster)
-	infl := make(map[int]map[string]int) // template → influencer value → count
+	infl := make(map[int]map[string]int)
 	for _, l := range lines {
 		cl := c.drain.Match(l.Message)
 		if cl == nil {
@@ -235,9 +216,6 @@ func topValue(m map[string]int) string {
 	return best
 }
 
-// addExample keeps up to catMaxExamples DISTINCT example messages for a category
-// (Elastic ML surfaces a handful of examples per category so an operator can see
-// the range of real messages behind a template, not just one).
 func (c *Categorizer) addExample(id int, msg string) {
 	ex := c.examples[id]
 	if len(ex) >= catMaxExamples {
@@ -245,28 +223,22 @@ func (c *Categorizer) addExample(id int, msg string) {
 	}
 	for _, e := range ex {
 		if e == msg {
-			return // already have this exact example
+			return
 		}
 	}
 	c.examples[id] = append(ex, msg)
 }
 
-// CategoryDefinition describes one learned log category (Elastic ML's
-// category_definition): a stable id, the template, several example messages, and
-// how much traffic it has carried. Returned by Categories for inspection / a
-// category catalogue in the UI.
 type CategoryDefinition struct {
 	ID         int       `json:"id"`
 	Template   string    `json:"template"`
 	Examples   []string  `json:"examples,omitempty"`
-	NumMatches int       `json:"num_matches"`  // cumulative lines matched
-	Buckets    int       `json:"buckets_seen"` // distinct buckets it appeared in
+	NumMatches int       `json:"num_matches"`
+	Buckets    int       `json:"buckets_seen"`
 	FirstSeen  time.Time `json:"first_seen"`
 	Suppressed bool      `json:"suppressed,omitempty"`
 }
 
-// Categories returns every learned category with its definition, ordered by id.
-// It is a read-only view of the categorizer's template catalogue.
 func (c *Categorizer) Categories() []CategoryDefinition {
 	byID := make(map[int]*Cluster)
 	for _, cl := range c.drain.Clusters() {
@@ -292,11 +264,6 @@ func (c *Categorizer) Categories() []CategoryDefinition {
 	return out
 }
 
-// ── Persistence ──────────────────────────────────────────────────────────────
-
-// Snapshot is the serialisable state of a Categorizer (templates, per-template
-// baselines, and detection bookkeeping) so log-anomaly detection resumes across
-// restarts. Pending (in-flight) lines are not persisted — they are re-fed.
 type Snapshot struct {
 	Span       time.Duration             `json:"span"`
 	Warmup     int                       `json:"warmup"`
@@ -314,7 +281,6 @@ type Snapshot struct {
 	Suppress   map[int]bool              `json:"suppress"`
 }
 
-// Snapshot captures the categorizer's current learned state.
 func (c *Categorizer) Snapshot() Snapshot {
 	ms := make(map[int]detect.ModelState, len(c.models))
 	for id, m := range c.models {
@@ -334,7 +300,6 @@ func (c *Categorizer) Snapshot() Snapshot {
 	}
 }
 
-// RestoreCategorizer rebuilds a Categorizer from a snapshot.
 func RestoreCategorizer(s Snapshot) *Categorizer {
 	span := s.Span
 	if span <= 0 {
@@ -358,8 +323,7 @@ func RestoreCategorizer(s Snapshot) *Categorizer {
 	c.sample = copyStrMap(s.Sample)
 	c.examples = copyStrSliceMap(s.Examples)
 	c.matches = copyIntMap(s.Matches)
-	// Back-compat: an older snapshot has no examples map — seed each category's
-	// example ring from its representative sample so the catalogue isn't empty.
+
 	if len(c.examples) == 0 && len(c.sample) > 0 {
 		c.examples = make(map[int][]string, len(c.sample))
 		for id, msg := range c.sample {

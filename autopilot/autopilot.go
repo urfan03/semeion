@@ -1,8 +1,3 @@
-// Package autopilot removes the biggest adoption barrier of Elastic ML: hand-
-// configuring every job. Given a sample of data it infers a sensible job —
-// bucket span from the data cadence, a seasonal metric detector per numeric
-// field, a joint multivariate detector when there are several, and a count
-// detector — so anomaly detection works with zero configuration.
 package autopilot
 
 import (
@@ -13,18 +8,16 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// niceSpans are the bucket spans the inferrer snaps to.
 var niceSpans = []time.Duration{
 	time.Second, 5 * time.Second, 10 * time.Second, 15 * time.Second, 30 * time.Second,
 	time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute,
 	time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour,
 }
 
-// Suggest infers a job from a sample of points.
 func Suggest(points []core.DataPoint) jobspec.Job {
 	span := suggestSpan(points)
 	fields := numericFields(points)
-	seasonal := len(points) >= 60 // enough history to learn a cycle
+	seasonal := len(points) >= 60
 
 	dets := []jobspec.Detector{{Function: jobspec.FuncCount}}
 	for _, f := range fields {
@@ -36,7 +29,6 @@ func Suggest(points []core.DataPoint) jobspec.Job {
 	return jobspec.Job{Name: "autopilot", BucketSpan: span, Detectors: dets}
 }
 
-// suggestSpan snaps the median inter-arrival time to the nearest nice span.
 func suggestSpan(points []core.DataPoint) time.Duration {
 	if len(points) < 2 {
 		return time.Minute
@@ -71,7 +63,6 @@ func suggestSpan(points []core.DataPoint) time.Duration {
 	return best
 }
 
-// numericFields is the sorted union of names appearing in points' Values.
 func numericFields(points []core.DataPoint) []string {
 	set := map[string]bool{}
 	for _, p := range points {

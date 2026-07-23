@@ -23,8 +23,6 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 	return w
 }
 
-// otlpMetrics renders an OTLP/JSON export of `n` points on one metric, with a
-// spike at spikeAt (use -1 for none).
 func otlpMetrics(metric string, start time.Time, n, spikeAt int) string {
 	var dps []string
 	for i := 0; i < n; i++ {
@@ -54,7 +52,6 @@ func TestLiveJobLifecycle(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
 	}
 
-	// The job appears in the listing as live.
 	w := do(t, h, http.MethodGet, "/v1/jobs", "")
 	var jobs struct {
 		Jobs []string `json:"jobs"`
@@ -65,7 +62,6 @@ func TestLiveJobLifecycle(t *testing.T) {
 		t.Fatalf("live listing: %+v", jobs)
 	}
 
-	// Push points directly.
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for i := 0; i < 60; i++ {
@@ -91,7 +87,6 @@ func TestLiveJobLifecycle(t *testing.T) {
 		t.Fatal("the spike produced no anomaly")
 	}
 
-	// Status reflects the ingestion.
 	w = do(t, h, http.MethodGet, "/v1/jobs/live-latency", "")
 	var st map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &st)
@@ -99,7 +94,6 @@ func TestLiveJobLifecycle(t *testing.T) {
 		t.Errorf("points counter: %v", st["points"])
 	}
 
-	// Results are queryable through the existing endpoints.
 	if w := do(t, h, http.MethodGet, "/v1/results/live-latency", ""); w.Code != http.StatusOK {
 		t.Errorf("results: %d", w.Code)
 	}
@@ -107,7 +101,6 @@ func TestLiveJobLifecycle(t *testing.T) {
 		t.Errorf("grafana: %d", w.Code)
 	}
 
-	// Delete removes it.
 	if w := do(t, h, http.MethodDelete, "/v1/jobs/live-latency", ""); w.Code != http.StatusOK {
 		t.Errorf("delete: %d", w.Code)
 	}
@@ -162,7 +155,6 @@ func TestOTLPMetricsIngestAlerts(t *testing.T) {
 	}
 }
 
-// A metric nobody claims must be accepted and ignored, not error.
 func TestOTLPUnclaimedMetric(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
@@ -229,7 +221,7 @@ func TestFlushClosesTheOpenBucket(t *testing.T) {
 		if i%2 == 0 {
 			v = 101.0
 		}
-		if i == 59 { // in the *last*, still-open bucket
+		if i == 59 {
 			v = 900
 		}
 		pts = append(pts, core.DataPoint{Time: start.Add(time.Duration(i) * time.Minute), Value: v})

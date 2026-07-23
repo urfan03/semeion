@@ -5,13 +5,9 @@ import (
 	"testing"
 )
 
-// #6: a steadily rising series is forecast to cross an upper limit within the
-// horizon; ForecastBreach reports WillBreach with a sensible step and a high
-// probability. A flat series well below the limit does not breach.
 func TestForecastBreachRisingCrossesUpperLimit(t *testing.T) {
 	p := NewGoProvider()
-	// 0,2,4,… rising by 2/step; at index 49 value is 98. Threshold 130 is reached
-	// ~16 steps out.
+
 	series := make([]float64, 50)
 	for i := range series {
 		series[i] = float64(i) * 2
@@ -39,24 +35,23 @@ func TestForecastBreachFlatDoesNotCross(t *testing.T) {
 	p := NewGoProvider()
 	series := make([]float64, 50)
 	for i := range series {
-		series[i] = 10 + math.Sin(float64(i)) // hovering around 10
+		series[i] = 10 + math.Sin(float64(i))
 	}
 	b := ForecastBreach(p.ForecastBands(series, 20), 1000, true)
 	if b.WillBreach {
 		t.Fatalf("flat series should not breach a far upper limit: %+v", b)
 	}
-	// Early-warning probability should be present but low.
+
 	if b.Probability > 0.5 {
 		t.Fatalf("no-breach probability should be low, got %v", b.Probability)
 	}
 }
 
-// #6 low side: a declining series crosses a lower limit (e.g. success-rate SLO).
 func TestForecastBreachDecliningCrossesLowerLimit(t *testing.T) {
 	p := NewGoProvider()
 	series := make([]float64, 50)
 	for i := range series {
-		series[i] = 100 - float64(i) // 100 down to 51
+		series[i] = 100 - float64(i)
 	}
 	b := ForecastBreach(p.ForecastBands(series, 40), 20, false)
 	if !b.WillBreach {

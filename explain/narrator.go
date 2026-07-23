@@ -5,24 +5,14 @@ import (
 	"strings"
 )
 
-// Narrator turns a Brief into prose. The default is deterministic (the Brief's
-// own template narrative); a caller may plug in an LLM-backed one. Critically,
-// a Narrator only *rewrites* — it is handed the finished facts and may not add
-// findings, so the explanation can never drift from what the engine established.
 type Narrator interface {
 	Narrate(b Brief) string
 }
 
-// TemplateNarrator returns the deterministic narrative unchanged — the zero-dep
-// default, and the fallback whenever an LLM narrator is unavailable.
 type TemplateNarrator struct{}
 
 func (TemplateNarrator) Narrate(b Brief) string { return b.Narrative }
 
-// Prompt renders the instruction + grounded facts to hand to an external LLM
-// (e.g. a copilot). semeion ships no LLM client — this is the contract that lets
-// one narrate without semeion depending on any model SDK. The rules in the
-// preamble are what keep a summariser from becoming a (bad) detector.
 func Prompt(b Brief) string {
 	var s strings.Builder
 	s.WriteString("You are explaining a production incident to an on-call engineer. ")

@@ -9,21 +9,16 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// #8: the `rate` function scores a per-second event rate. A flat rate baseline
-// with one bucket carrying a large burst of events is flagged, and the reported
-// actual is events-per-second (count / bucket-span-seconds), not the raw count.
 func TestRateDetectsBurst(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
 	for b := 0; b < 60; b++ {
-		n := 6 // 6 events per 60s bucket → 0.1/s baseline
+		n := 6
 		if b == 55 {
-			n = 600 // sudden burst → 10/s
+			n = 600
 		}
 		bt := t0.Add(time.Duration(b) * time.Minute)
-		// Spread events across the first ~54s so they all land in this bucket
-		// (a full second-per-event spacing would spill a 600-event burst into the
-		// following ten buckets).
+
 		for i := 0; i < n; i++ {
 			pts = append(pts, core.DataPoint{Time: bt.Add(time.Duration(i) * 90 * time.Millisecond)})
 		}
@@ -50,8 +45,6 @@ func TestRateDetectsBurst(t *testing.T) {
 	}
 }
 
-// #8: non_null_sum reduces to the plain sum, and metric to the mean, over a
-// bucket's field values.
 func TestNonNullSumAndMetricAggregate(t *testing.T) {
 	pts := []core.DataPoint{
 		{Values: map[string]float64{"v": 2}},
@@ -66,17 +59,15 @@ func TestNonNullSumAndMetricAggregate(t *testing.T) {
 	}
 }
 
-// #8: freq_rare weights a rare value's score by its in-bucket frequency, so a
-// rare value that recurs many times scores strictly higher than a lone one.
 func TestFreqRareWeightsByFrequency(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var pts []core.DataPoint
-	// 30 warm-up buckets of a single common value "ok".
+
 	for b := 0; b < 30; b++ {
 		bt := t0.Add(time.Duration(b) * time.Minute)
 		pts = append(pts, core.DataPoint{Time: bt, Fields: map[string]string{"code": "ok"}})
 	}
-	// A lone rare value in bucket 30, and a high-frequency rare value in bucket 31.
+
 	b30 := t0.Add(30 * time.Minute)
 	pts = append(pts, core.DataPoint{Time: b30, Fields: map[string]string{"code": "loner"}})
 	b31 := t0.Add(31 * time.Minute)

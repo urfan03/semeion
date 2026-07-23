@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// fileJob mirrors Job for on-disk config, but takes bucket_span as a human
-// duration string ("5m", "1h") instead of raw nanoseconds.
 type fileJob struct {
 	Name        string     `json:"name"`
 	BucketSpan  string     `json:"bucket_span"`
@@ -17,8 +15,6 @@ type fileJob struct {
 	Calendars   []Calendar `json:"calendars,omitempty"`
 }
 
-// LoadFile reads and validates a job definition from a JSON file. bucket_span
-// is a Go duration string (e.g. "5m", "1h", "30s").
 func LoadFile(path string) (Job, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -27,8 +23,6 @@ func LoadFile(path string) (Job, error) {
 	return parseJob(raw, path)
 }
 
-// Parse decodes and validates a job from JSON bytes (bucket_span as a duration
-// string). Used by the API to accept jobs over the wire.
 func Parse(raw []byte) (Job, error) { return parseJob(raw, "request") }
 
 func parseJob(raw []byte, src string) (Job, error) {

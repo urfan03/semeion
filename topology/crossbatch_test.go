@@ -13,32 +13,27 @@ func sp(trace, id, parent, svc string, ms int) otlp.Span {
 		Start: t0, End: t0.Add(time.Duration(ms) * time.Millisecond)}
 }
 
-// C5 regression: with per-service collectors, a caller and its callee arrive in
-// SEPARATE Observe batches. The edge must still form (the old per-batch index
-// produced zero edges in this, the normal production case).
 func TestEdgeFormsAcrossBatches(t *testing.T) {
 	g := New()
-	g.Observe([]otlp.Span{sp("t1", "a", "", "gateway", 300)})   // batch 1: parent only
-	g.Observe([]otlp.Span{sp("t1", "b", "a", "checkout", 260)}) // batch 2: child only
+	g.Observe([]otlp.Span{sp("t1", "a", "", "gateway", 300)})
+	g.Observe([]otlp.Span{sp("t1", "b", "a", "checkout", 260)})
 	if !g.Related("gateway", "checkout") {
 		t.Fatalf("cross-batch edge not formed: %+v", g.Edges())
 	}
 }
 
-// And the reverse arrival order (child before its parent) must also resolve.
 func TestEdgeFormsWhenChildArrivesBeforeParent(t *testing.T) {
 	g := New()
-	g.Observe([]otlp.Span{sp("t2", "c", "b", "payments-db", 200)}) // child first (orphan)
+	g.Observe([]otlp.Span{sp("t2", "c", "b", "payments-db", 200)})
 	if len(g.Edges()) != 0 {
 		t.Fatalf("no edge should exist before the parent arrives: %+v", g.Edges())
 	}
-	g.Observe([]otlp.Span{sp("t2", "b", "", "checkout", 260)}) // parent arrives
+	g.Observe([]otlp.Span{sp("t2", "b", "", "checkout", 260)})
 	if !g.Related("checkout", "payments-db") {
 		t.Fatalf("orphan child not resolved when parent arrived: %+v", g.Edges())
 	}
 }
 
-// A parent that never arrives yields no edge (never invents one).
 func TestUnresolvedOrphanYieldsNoEdge(t *testing.T) {
 	g := New()
 	g.Observe([]otlp.Span{sp("t3", "z2", "z1", "checkout", 100)})
@@ -47,7 +42,6 @@ func TestUnresolvedOrphanYieldsNoEdge(t *testing.T) {
 	}
 }
 
-// The span index is bounded — a flood of unique spans can't grow it without limit.
 func TestSpanIndexBounded(t *testing.T) {
 	g := New()
 	g.MaxSpans = 100

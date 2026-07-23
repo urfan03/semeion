@@ -19,14 +19,14 @@ func TestDetectSeasonality(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("expected a period, got none")
 	}
-	// Allow ±1 sample of slack around the true period.
+
 	if got[0] < 23 || got[0] > 25 {
 		t.Fatalf("period: got %d, want ~24", got[0])
 	}
 }
 
 func TestDetectSeasonalityNoneOnNoise(t *testing.T) {
-	// Deterministic non-periodic ramp — no strong single period.
+
 	x := make([]float64, 120)
 	for i := range x {
 		x[i] = float64(i)
@@ -60,7 +60,7 @@ func TestChangePointsStep(t *testing.T) {
 	if len(cps) == 0 {
 		t.Fatal("expected a change point at the step")
 	}
-	// The first detection should land shortly after the step at index 30.
+
 	if cps[0] < 30 || cps[0] > 45 {
 		t.Fatalf("change point: got %d, want ~30-45", cps[0])
 	}
@@ -73,7 +73,7 @@ func TestForecastContinuesSeason(t *testing.T) {
 	if len(f) != period {
 		t.Fatalf("forecast length: got %d", len(f))
 	}
-	// The forecast should stay within the series' amplitude band, not diverge.
+
 	for h, v := range f {
 		if v < 40 || v > 160 {
 			t.Fatalf("forecast[%d]=%.1f out of band [40,160]", h, v)
@@ -81,25 +81,22 @@ func TestForecastContinuesSeason(t *testing.T) {
 	}
 }
 
-// P1c regression: a pure linear ramp has NO level shifts — it must not be
-// reported as a staircase of spurious change points (measured: 7 fake CPs).
 func TestChangePointsTrendHasNone(t *testing.T) {
 	x := make([]float64, 200)
 	for i := range x {
-		x[i] = float64(i) // pure ramp 0..199
+		x[i] = float64(i)
 	}
 	if cps := NewGoProvider().ChangePoints(x); len(cps) != 0 {
 		t.Fatalf("a pure ramp must yield no change points, got %v", cps)
 	}
 }
 
-// A step superimposed on a trend is still found.
 func TestChangePointsStepOnTrend(t *testing.T) {
 	x := make([]float64, 80)
 	for i := range x {
-		x[i] = float64(i) // trend
+		x[i] = float64(i)
 		if i >= 40 {
-			x[i] += 100 // plus a level jump at 40
+			x[i] += 100
 		}
 	}
 	cps := NewGoProvider().ChangePoints(x)
@@ -111,13 +108,11 @@ func TestChangePointsStepOnTrend(t *testing.T) {
 	}
 }
 
-// P1f regression: a seasonal signal riding on a trend must still be detected —
-// the raw ACF is masked by the trend, so detection detrends first.
 func TestDetectSeasonalityUnderTrend(t *testing.T) {
 	period := 24
 	x := make([]float64, 240)
 	for i := range x {
-		x[i] = 100 + 30*sineAt(i, period) + 2*float64(i) // sine + strong upward trend
+		x[i] = 100 + 30*sineAt(i, period) + 2*float64(i)
 	}
 	got := NewGoProvider().DetectSeasonality(x)
 	if len(got) == 0 {
@@ -130,7 +125,6 @@ func TestDetectSeasonalityUnderTrend(t *testing.T) {
 
 func sineAt(i, period int) float64 { return math.Sin(2 * math.Pi * float64(i) / float64(period)) }
 
-// Parity: forecast bands bracket the point forecast and widen with the horizon.
 func TestForecastBands(t *testing.T) {
 	x := sineSeries(120, 12)
 	bands := NewGoProvider().ForecastBands(x, 6)

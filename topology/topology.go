@@ -1,10 +1,3 @@
-// Package topology reconstructs the service dependency graph from traces.
-//
-// It exists for one reason: to answer "was this service upstream of the others
-// that were failing?". Without that, correlation can only say two things
-// happened together; with it, correlation can say which one was able to cause
-// the other. The graph is derived from data (spans), never configured by hand —
-// a hand-maintained dependency list is wrong within a week.
 package topology
 
 import (
@@ -15,7 +8,6 @@ import (
 	"github.com/urfan03/semeion/otlp"
 )
 
-// Edge is one directed call relationship: Caller depends on Callee.
 type Edge struct {
 	Caller string    `json:"caller"`
 	Callee string    `json:"callee"`
@@ -24,30 +16,22 @@ type Edge struct {
 	P50Ms  float64   `json:"p50_ms"`
 	LastAt time.Time `json:"last_at"`
 
-	durations []float64 // callee-side span durations, ms
+	durations []float64
 }
 
-// Graph is a service dependency graph. Safe for concurrent use: traces arrive
-// on the ingest path while incidents are being correlated on another.
 type Graph struct {
 	mu    sync.RWMutex
-	edges map[string]*Edge // "caller\x00callee"
+	edges map[string]*Edge
 	nodes map[string]*Node
-	// MaxSamples bounds the per-edge latency sample used for the median.
+
 	MaxSamples int
 
-	// A persistent span index so a parent and its child resolve into an edge
-	// even when they arrive in SEPARATE Observe batches — the normal case with
-	// per-service OTLP collectors. `spans` maps traceID\x00spanID → the span's
-	// service; `orphans` buffers children whose parent hasn't been seen yet,
-	// keyed by the parent's traceID\x00spanID. Both are bounded (MaxSpans).
 	spans    map[string]spanMeta
 	orphans  map[string][]spanMeta
-	spanFIFO []string // insertion order for eviction
+	spanFIFO []string
 	MaxSpans int
 }
 
-// spanMeta is the part of a span the edge stats need, kept in the index.
 type spanMeta struct {
 	service string
 	err     bool
@@ -55,7 +39,6 @@ type spanMeta struct {
 	durMs   float64
 }
 
-// Node is a service and its observed traffic.
 type Node struct {
 	Name   string    `json:"name"`
 	Spans  int       `json:"spans"`
@@ -63,7 +46,6 @@ type Node struct {
 	LastAt time.Time `json:"last_at"`
 }
 
-// New returns an empty graph.
 func New() *Graph {
 	return &Graph{
 		edges: map[string]*Edge{}, nodes: map[string]*Node{}, MaxSamples: 1000,
@@ -71,19 +53,16 @@ func New() *Graph {
 	}
 }
 
-// Snapshot is a serializable copy of the graph for persistence.
 type Snapshot struct {
 	Edges []EdgeSnap `json:"edges"`
 	Nodes []Node     `json:"nodes"`
 }
 
-// EdgeSnap carries an edge plus its latency samples (which Edge hides).
 type EdgeSnap struct {
 	Edge
 	Durations []float64 `json:"durations,omitempty"`
 }
 
-// Snapshot returns a serializable copy of the graph.
 func (g *Graph) Snapshot() Snapshot {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -97,7 +76,6 @@ func (g *Graph) Snapshot() Snapshot {
 	return s
 }
 
-// Restore replaces the graph's contents with a snapshot.
 func (g *Graph) Restore(s Snapshot) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -114,10 +92,6 @@ func (g *Graph) Restore(s Snapshot) {
 	}
 }
 
-// Observe folds a batch of spans into the graph. Cross-service edges resolve
-// through a persistent span index, so a caller and its callee produce an edge
-// even when they arrive in different batches (per-service collectors) or out of
-// order (child before parent) — without ever inventing an edge.
 func (g *Graph) Observe(spans []otlp.Span) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -145,7 +119,6 @@ func (g *Graph) Observe(spans []otlp.Span) {
 		id := s.TraceID + "\x00" + s.SpanID
 		g.indexSpan(id, self)
 
-		// This span may be the parent some earlier orphan child was waiting for.
 		if kids, ok := g.orphans[id]; ok {
 			for _, kid := range kids {
 				g.addEdge(self.service, kid)
@@ -158,17 +131,15 @@ func (g *Graph) Observe(spans []otlp.Span) {
 		}
 		pid := s.TraceID + "\x00" + s.ParentID
 		if parent, ok := g.spans[pid]; ok {
-			g.addEdge(parent.service, self) // parent already seen
+			g.addEdge(parent.service, self)
 		} else {
-			// Parent not seen yet: buffer this child until it arrives.
+
 			g.orphans[pid] = append(g.orphans[pid], self)
 			g.trimOrphans()
 		}
 	}
 }
 
-// addEdge records (or updates) a caller→callee edge using the callee span's
-// error/latency. An internal (same-service) span makes no cross-service edge.
 func (g *Graph) addEdge(caller string, callee spanMeta) {
 	if caller == "" || callee.service == "" || caller == callee.service {
 		return
@@ -191,7 +162,6 @@ func (g *Graph) addEdge(caller string, callee spanMeta) {
 	}
 }
 
-// indexSpan records a span in the bounded index, evicting the oldest when full.
 func (g *Graph) indexSpan(id string, m spanMeta) {
 	if _, exists := g.spans[id]; !exists {
 		g.spanFIFO = append(g.spanFIFO, id)
@@ -208,8 +178,6 @@ func (g *Graph) indexSpan(id string, m spanMeta) {
 	}
 }
 
-// trimOrphans bounds the orphan buffer; unresolved children are dropped oldest-
-// first (a parent that never arrives simply yields no edge).
 func (g *Graph) trimOrphans() {
 	max := g.MaxSpans
 	if max <= 0 {
@@ -218,8 +186,7 @@ func (g *Graph) trimOrphans() {
 	if len(g.orphans) <= max {
 		return
 	}
-	// Cheap bound: when far over, clear — orphans are transient resolution state,
-	// never a data source, so dropping them only forgoes some edges.
+
 	for k := range g.orphans {
 		delete(g.orphans, k)
 		if len(g.orphans) <= max*3/4 {
@@ -235,7 +202,6 @@ func (g *Graph) maxSamples() int {
 	return g.MaxSamples
 }
 
-// Edges returns a snapshot, busiest first.
 func (g *Graph) Edges() []Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -250,7 +216,6 @@ func (g *Graph) Edges() []Edge {
 	return out
 }
 
-// Nodes returns a snapshot, busiest first.
 func (g *Graph) Nodes() []Node {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -262,16 +227,12 @@ func (g *Graph) Nodes() []Node {
 	return out
 }
 
-// Empty reports whether anything has been observed yet.
 func (g *Graph) Empty() bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return len(g.nodes) == 0
 }
 
-// Related reports whether two services call each other, in either direction.
-// Used for linking symptoms: a caller and its callee failing together is one
-// incident, not two.
 func (g *Graph) Related(a, b string) bool {
 	if a == "" || b == "" || a == b {
 		return false
@@ -283,9 +244,6 @@ func (g *Graph) Related(a, b string) bool {
 	return ab || ba
 }
 
-// Reaches reports whether `from` can reach `to` by following calls, i.e. whether
-// a failure in `to` could surface as a failure in `from`. Depth-limited: beyond a
-// few hops "could have caused" stops meaning anything.
 func (g *Graph) Reaches(from, to string, maxDepth int) bool {
 	if from == "" || to == "" || from == to {
 		return false
@@ -317,14 +275,10 @@ func (g *Graph) Reaches(from, to string, maxDepth int) bool {
 	return false
 }
 
-// UpstreamOf counts how many of `others` this service sits upstream of — how
-// many of the affected services a failure here could explain. That count is the
-// topological evidence the root-cause ranking uses.
 func (g *Graph) UpstreamOf(service string, others []string, maxDepth int) int {
 	n := 0
 	for _, o := range others {
-		// service is upstream of o when o's traffic path reaches service, i.e.
-		// o calls (transitively) into service.
+
 		if g.Reaches(o, service, maxDepth) {
 			n++
 		}

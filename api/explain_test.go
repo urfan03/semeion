@@ -17,7 +17,6 @@ func TestExplainEndpoint(t *testing.T) {
 	h := s.Handler()
 	base := time.Now().UTC()
 
-	// A deploy plus a symptom on the same service → change-led incident.
 	body, _ := json.Marshal(map[string]any{
 		"name": "checkout v2", "kind": "deploy", "time": base.Add(-2 * time.Minute),
 		"labels": map[string]string{"service": "checkout"},
@@ -25,7 +24,6 @@ func TestExplainEndpoint(t *testing.T) {
 	do(t, h, http.MethodPost, "/v1/changes", string(body))
 	storeSym(s, "checkout-errors", "checkout", base, 90)
 
-	// Open the incident via the tracked view, then grab its id.
 	w := do(t, h, http.MethodGet, "/v1/incidents?window=10m", "")
 	var inc struct {
 		Incidents []struct {
@@ -74,7 +72,7 @@ func TestSLOEndpoint(t *testing.T) {
 	var samples []slo.Sample
 	for i := 0; i < 1440; i++ {
 		ts := now.Add(-time.Duration(1440-i) * time.Minute)
-		samples = append(samples, slo.Sample{Time: ts, Total: 1000, Good: 950}) // 5% errors
+		samples = append(samples, slo.Sample{Time: ts, Total: 1000, Good: 950})
 	}
 	body, _ := json.Marshal(map[string]any{
 		"objective": 0.999, "window": "24h", "samples": samples, "now": now,
@@ -95,8 +93,6 @@ func TestSLOEndpoint(t *testing.T) {
 	}
 }
 
-// With no explicit clock, the SLO report evaluates as of the freshest sample —
-// so a batch of historical data reports on itself, not on wall-clock now.
 func TestSLOEvaluatesAsOfLatestSampleByDefault(t *testing.T) {
 	s := NewServer()
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -115,7 +111,7 @@ func TestSLOEvaluatesAsOfLatestSampleByDefault(t *testing.T) {
 
 func TestSLORejectsBadMethod(t *testing.T) {
 	s := NewServer()
-	// GET /v1/slo now lists named SLOs (200); an unsupported method is 405.
+
 	if w := do(t, s.Handler(), http.MethodDelete, "/v1/slo", ""); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 for DELETE, got %d", w.Code)
 	}
@@ -124,11 +120,10 @@ func TestSLORejectsBadMethod(t *testing.T) {
 	}
 }
 
-// Guard the core promise: the brief never invents a field the incident lacks.
 func TestExplainDoesNotFabricate(t *testing.T) {
 	s := NewServer()
 	h := s.Handler()
-	// A bare symptom: no service, no change, no template.
+
 	s.Store("mystery", []core.BucketResult{{Time: time.Now().UTC(), Records: []core.Record{{
 		Time: time.Now().UTC(), Detector: "count", Series: "", Score: 80, Kind: "metric",
 	}}}})
@@ -145,7 +140,7 @@ func TestExplainDoesNotFabricate(t *testing.T) {
 		Brief explain.Brief `json:"brief"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &res)
-	// Cause target falls back to the job, never a made-up service.
+
 	if res.Brief.Cause.Kind == "service" {
 		t.Errorf("a symptom with no service must not be explained as a service cause: %+v", res.Brief.Cause)
 	}

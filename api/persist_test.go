@@ -12,29 +12,24 @@ import (
 	"github.com/urfan03/semeion/slo"
 )
 
-// buildRichServer stands up a server with something in every persisted store.
 func buildRichServer(t *testing.T) *Server {
 	t.Helper()
 	s := NewServer()
 	h := s.Handler()
 	base := time.Now().UTC()
 
-	// A change + a symptom → a tracked incident + a change-log entry.
 	ch, _ := json.Marshal(correlate.Change{Time: base.Add(-2 * time.Minute), Name: "checkout v2",
 		Kind: "deploy", Labels: map[string]string{"service": "checkout"}})
 	do(t, h, http.MethodPost, "/v1/changes", string(ch))
 	storeSym(s, "checkout-errors", "checkout", base, 90)
-	do(t, h, http.MethodGet, "/v1/incidents?window=10m", "") // opens the incident
+	do(t, h, http.MethodGet, "/v1/incidents?window=10m", "")
 
-	// Traces → dependency graph.
 	do(t, h, http.MethodPost, "/v1/otlp/v1/traces", threeTierTrace)
 
-	// A named SLO with samples.
 	sl, _ := json.Marshal(map[string]any{"objective": 0.99, "window": "1h",
 		"samples": sloSamples(base, 120, 100, 0.02), "now": base})
 	do(t, h, http.MethodPost, "/v1/slo/api-availability", string(sl))
 
-	// A live metric job with an ingested spike (learned baseline).
 	do(t, h, http.MethodPost, "/v1/jobs",
 		`{"job":{"name":"live-lat","bucket_span":"1m","detectors":[{"function":"mean","field":"value","side":"high"}]},"metric":"m"}`)
 	var pts []core.DataPoint
@@ -63,7 +58,6 @@ func TestServerStateRoundTrip(t *testing.T) {
 	}
 	h := dst.Handler()
 
-	// Changes survived.
 	var chg struct {
 		Changes []correlate.Change `json:"changes"`
 	}
@@ -72,7 +66,6 @@ func TestServerStateRoundTrip(t *testing.T) {
 		t.Fatalf("changes not restored: %+v", chg.Changes)
 	}
 
-	// Topology survived.
 	var topo struct {
 		Edges []map[string]any `json:"edges"`
 	}
@@ -81,7 +74,6 @@ func TestServerStateRoundTrip(t *testing.T) {
 		t.Fatalf("graph not restored: %d edges", len(topo.Edges))
 	}
 
-	// Open incident survived, keeping its id.
 	var open struct {
 		Incidents []correlate.Tracked `json:"incidents"`
 	}
@@ -94,7 +86,6 @@ func TestServerStateRoundTrip(t *testing.T) {
 		t.Errorf("incident id changed across restore: %s vs %s", open.Incidents[0].ID, srcOpen[0].ID)
 	}
 
-	// SLO survived with its target and samples.
 	var rep slo.Report
 	json.Unmarshal(do(t, h, http.MethodGet, "/v1/slo/api-availability", "").Body.Bytes(), &rep)
 	if rep.Objective != 0.99 {
@@ -104,8 +95,6 @@ func TestServerStateRoundTrip(t *testing.T) {
 		t.Errorf("SLO samples not restored (SLI %.3f)", rep.SLI)
 	}
 
-	// Live job survived and keeps its learned baseline: a fresh spike is caught
-	// immediately, without a warm-up.
 	var st map[string]any
 	json.Unmarshal(do(t, h, http.MethodGet, "/v1/jobs/live-lat", "").Body.Bytes(), &st)
 	if st["points"].(float64) != 40 {
@@ -114,7 +103,7 @@ func TestServerStateRoundTrip(t *testing.T) {
 	base := time.Now().UTC()
 	spike := []core.DataPoint{
 		{Time: base.Add(60 * time.Minute), Value: 900},
-		{Time: base.Add(61 * time.Minute), Value: 100}, // closes the spike bucket
+		{Time: base.Add(61 * time.Minute), Value: 100},
 	}
 	body, _ := json.Marshal(map[string]any{"points": spike})
 	w := do(t, h, http.MethodPost, "/v1/jobs/live-lat/points", string(body))
@@ -151,12 +140,12 @@ func TestSaveStateAtomicOverwrite(t *testing.T) {
 	if err := s.SaveState(path); err != nil {
 		t.Fatal(err)
 	}
-	// A second save over the same path must succeed (temp-file rename).
+
 	storeSym(s, "another", "cart", time.Now().UTC(), 80)
 	if err := s.SaveState(path); err != nil {
 		t.Fatalf("overwrite save failed: %v", err)
 	}
-	// And the result reloads cleanly.
+
 	if _, err := NewServer().LoadState(path); err != nil {
 		t.Fatalf("reload after overwrite failed: %v", err)
 	}

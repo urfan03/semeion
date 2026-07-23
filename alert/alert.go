@@ -1,9 +1,3 @@
-// Package alert delivers anomaly records to the outside world.
-//
-// Detection stays deterministic and side-effect free; this package is the only
-// place that talks to Slack, a webhook, or Alertmanager. A Notifier applies the
-// two things every practical alerting path needs — a score floor and per-series
-// deduplication — so a sustained anomaly pages once, not once per bucket.
 package alert
 
 import (
@@ -18,7 +12,6 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// Alert is one anomaly record, tagged with the job it came from.
 type Alert struct {
 	Job         string            `json:"job"`
 	Time        time.Time         `json:"time"`
@@ -31,11 +24,10 @@ type Alert struct {
 	Direction   string            `json:"direction,omitempty"`
 	Kind        string            `json:"kind,omitempty"`
 	Template    string            `json:"template,omitempty"`
-	Note        string            `json:"note,omitempty"` // free-text annotation (e.g. a digest summary)
+	Note        string            `json:"note,omitempty"`
 	Influencers []core.Influencer `json:"influencers,omitempty"`
 }
 
-// Severity buckets the score the way an on-call rotation reads it.
 func (a Alert) Severity() string {
 	switch {
 	case a.Score >= 75:
@@ -47,7 +39,6 @@ func (a Alert) Severity() string {
 	}
 }
 
-// Title is the one-line summary shared by every sink.
 func (a Alert) Title() string {
 	s := fmt.Sprintf("%s: %s", a.Job, a.Detector)
 	if a.Series != "" {
@@ -56,10 +47,9 @@ func (a Alert) Title() string {
 	return fmt.Sprintf("%s — score %.0f", s, a.Score)
 }
 
-// Description explains the record in words: what was seen, what was expected.
 func (a Alert) Description() string {
 	if a.Note != "" && a.Kind == "digest" {
-		return a.Note // a digest carries its own summary, not the actual/typical shape
+		return a.Note
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "actual %.4g, typical %.4g", a.Actual, a.Typical)
@@ -86,37 +76,26 @@ func (a Alert) Description() string {
 	return b.String()
 }
 
-// Sink delivers one alert somewhere.
 type Sink interface {
 	Name() string
 	Send(ctx context.Context, a Alert) error
 }
 
-// Notifier filters, deduplicates and fans records out to every sink.
-//
-// The zero value is unusable — build it with NewNotifier.
 type Notifier struct {
 	Sinks    []Sink
-	MinScore float64       // records below this are dropped (default 50)
-	Dedup    time.Duration // re-alert window per (job, detector, series); 0 disables
+	MinScore float64
+	Dedup    time.Duration
 	OnError  func(sink string, a Alert, err error)
 
-	// Flapping suppression: a series that keeps alerting (FlapThreshold admitted
-	// alerts within FlapWindow) is unstable — paging on every cycle is noise. Once
-	// flagged, further alerts for that series are suppressed until it stays quiet
-	// for FlapWindow. 0 threshold disables. Flapped counts the suppressed storms.
 	FlapThreshold int
 	FlapWindow    time.Duration
 	Flapped       int64
 
 	mu      sync.Mutex
 	last    map[string]time.Time
-	history map[string][]time.Time // recent admitted alert bucket-times per key (for flap detection)
+	history map[string][]time.Time
 }
 
-// NewNotifier builds a notifier with sensible on-call defaults: only warning and
-// above, at most one page per series per 30 minutes, and flapping suppression
-// after 5 alerts within 2 hours.
 func NewNotifier(sinks ...Sink) *Notifier {
 	return &Notifier{
 		Sinks: sinks, MinScore: 50, Dedup: 30 * time.Minute,
@@ -125,9 +104,6 @@ func NewNotifier(sinks ...Sink) *Notifier {
 	}
 }
 
-// Notify sends every qualifying record in results. It returns how many alerts
-// were delivered and joins any sink errors — one broken sink never stops the
-// others, and never stops detection.
 func (n *Notifier) Notify(ctx context.Context, job string, results []core.BucketResult) (int, error) {
 	var (
 		sent int
@@ -158,10 +134,6 @@ func (n *Notifier) Notify(ctx context.Context, job string, results []core.Bucket
 	return sent, errors.Join(errs...)
 }
 
-// Deliver sends one already-decided alert to every sink, bypassing the score
-// floor and dedup window. It is for callers that do their own deduplication —
-// the incident tracker fires a lifecycle event exactly once per transition, so
-// re-applying the per-series dedup here would be wrong.
 func (n *Notifier) Deliver(ctx context.Context, a Alert) (bool, error) {
 	delivered := false
 	var errs []error
@@ -178,8 +150,6 @@ func (n *Notifier) Deliver(ctx context.Context, a Alert) (bool, error) {
 	return delivered, errors.Join(errs...)
 }
 
-// admit applies the score floor and the dedup window. It records the send time
-// only when the alert passes, so a suppressed alert never extends the window.
 func (n *Notifier) admit(a Alert) bool {
 	if a.Score < n.MinScore {
 		return false
@@ -193,13 +163,11 @@ func (n *Notifier) admit(a Alert) bool {
 	if n.last == nil {
 		n.last = map[string]time.Time{}
 	}
-	// Dedup is measured in *bucket* time, not wall clock: replaying history must
-	// suppress exactly the same alerts a live run would.
+
 	if prev, ok := n.last[key]; ok && a.Time.Sub(prev) < n.Dedup {
 		return false
 	}
-	// Flapping: count admitted alerts within the rolling FlapWindow; once a series
-	// exceeds the threshold, suppress it until it goes quiet for a full window.
+
 	if n.FlapThreshold > 0 && n.FlapWindow > 0 {
 		if n.history == nil {
 			n.history = map[string][]time.Time{}
@@ -215,7 +183,7 @@ func (n *Notifier) admit(a Alert) bool {
 		n.history[key] = h
 		if len(h) > n.FlapThreshold {
 			n.Flapped++
-			n.last[key] = a.Time // keep dedup anchored so the storm stays suppressed
+			n.last[key] = a.Time
 			return false
 		}
 	}
@@ -223,7 +191,6 @@ func (n *Notifier) admit(a Alert) bool {
 	return true
 }
 
-// FromRecord converts an engine record into an alert.
 func FromRecord(job string, r core.Record) Alert {
 	return Alert{
 		Job:         job,
@@ -241,7 +208,6 @@ func FromRecord(job string, r core.Record) Alert {
 	}
 }
 
-// Multi fans one alert out to several sinks as if they were one.
 type Multi []Sink
 
 func (m Multi) Name() string { return "multi" }
@@ -256,7 +222,6 @@ func (m Multi) Send(ctx context.Context, a Alert) error {
 	return errors.Join(errs...)
 }
 
-// sortedInfluencers keeps sink payloads stable for tests and diffs.
 func sortedInfluencers(in []core.Influencer) []core.Influencer {
 	out := append([]core.Influencer(nil), in...)
 	sort.Slice(out, func(i, j int) bool {

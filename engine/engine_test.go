@@ -16,7 +16,6 @@ func demoJob() jobspec.Job {
 	}
 }
 
-// One point per bucket over a steady baseline, with a spike near the end.
 func series(start time.Time, n int, spikeAt int) []core.DataPoint {
 	pts := make([]core.DataPoint, 0, n)
 	base := []float64{99, 100, 101, 100, 98, 102}
@@ -30,7 +29,6 @@ func series(start time.Time, n int, spikeAt int) []core.DataPoint {
 	return pts
 }
 
-// Streaming (Push/Flush) must produce exactly the same records as batch Run.
 func TestStreamingMatchesBatch(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	pts := series(start, 60, 55)
@@ -61,11 +59,9 @@ func TestStreamingMatchesBatch(t *testing.T) {
 	}
 }
 
-// A snapshot taken mid-stream and restored into a fresh engine must continue
-// scoring identically to the original.
 func TestSnapshotRestoreContinuity(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	warm := series(start, 40, -1) // no spike, just warm up
+	warm := series(start, 40, -1)
 
 	orig, _ := New(demoJob())
 	orig.SetThreshold(50)
@@ -77,7 +73,6 @@ func TestSnapshotRestoreContinuity(t *testing.T) {
 	restored, _ := New(demoJob())
 	restored.Restore(snap)
 
-	// Feed the same spike to both; results must match.
 	spike := core.DataPoint{Time: start.Add(40 * time.Minute), Value: 500}
 	next := core.DataPoint{Time: start.Add(41 * time.Minute), Value: 100}
 

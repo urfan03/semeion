@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// clk is a controllable clock for deterministic lifecycle tests.
 type clk struct{ t time.Time }
 
 func (c *clk) now() time.Time      { return c.t }
@@ -30,7 +29,6 @@ func TestTrackerOpensOnceAndKeepsIdentity(t *testing.T) {
 	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(c)
 
-	// First sighting → opened.
 	ev := tr.Reconcile([]Incident{inc("a", c.now(), 80, "service=checkout")})
 	if len(ev) != 1 || ev[0].Kind != Opened {
 		t.Fatalf("first reconcile should open, got %+v", ev)
@@ -40,7 +38,6 @@ func TestTrackerOpensOnceAndKeepsIdentity(t *testing.T) {
 		t.Fatal("opened incident must get a stable id")
 	}
 
-	// Same incident again a minute later → no new event, same id.
 	c.add(time.Minute)
 	ev = tr.Reconcile([]Incident{inc("b", c.now(), 82, "service=checkout")})
 	if len(ev) != 0 {
@@ -60,13 +57,11 @@ func TestTrackerResolvesWhenQuiet(t *testing.T) {
 	tr := newTestTracker(c)
 	tr.Reconcile([]Incident{inc("a", c.now(), 80, "host=web-1")})
 
-	// Nothing fresh, but not yet past the resolve window.
 	c.add(5 * time.Minute)
 	if ev := tr.Reconcile(nil); len(ev) != 0 {
 		t.Fatalf("should not resolve before the window, got %+v", ev)
 	}
 
-	// Past the window now.
 	c.add(6 * time.Minute)
 	ev := tr.Reconcile(nil)
 	if len(ev) != 1 || ev[0].Kind != Resolved {
@@ -81,19 +76,17 @@ func TestTrackerResolvesWhenQuiet(t *testing.T) {
 	}
 }
 
-// A fresh sighting after a lull keeps the incident open (this is the dedupe that
-// stops a flapping incident from paging on every poll).
 func TestTrackerFreshActivityDefersResolution(t *testing.T) {
 	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(c)
 	tr.Reconcile([]Incident{inc("a", c.now(), 80, "host=web-1")})
 
 	c.add(8 * time.Minute)
-	// Fresh symptom (End advances to now) resets the clock.
+
 	f := inc("a2", c.now(), 80, "host=web-1")
 	tr.Reconcile([]Incident{f})
 
-	c.add(8 * time.Minute) // 16m since open, but only 8m since last activity
+	c.add(8 * time.Minute)
 	if ev := tr.Reconcile(nil); len(ev) != 0 {
 		t.Fatalf("fresh activity should defer resolution, got %+v", ev)
 	}
@@ -105,10 +98,10 @@ func TestTrackerFreshActivityDefersResolution(t *testing.T) {
 func TestTrackerEscalatesOnBandCrossing(t *testing.T) {
 	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(c)
-	tr.Reconcile([]Incident{inc("a", c.now(), 60, "host=web-1")}) // warning band
+	tr.Reconcile([]Incident{inc("a", c.now(), 60, "host=web-1")})
 
 	c.add(time.Minute)
-	ev := tr.Reconcile([]Incident{inc("a", c.now(), 90, "host=web-1")}) // → critical
+	ev := tr.Reconcile([]Incident{inc("a", c.now(), 90, "host=web-1")})
 	if len(ev) != 1 || ev[0].Kind != Escalated {
 		t.Fatalf("crossing into critical should escalate, got %+v", ev)
 	}
@@ -116,7 +109,6 @@ func TestTrackerEscalatesOnBandCrossing(t *testing.T) {
 		t.Errorf("peak score should track the max, got %v", ev[0].Incident.PeakScore)
 	}
 
-	// Staying in the same band does not escalate again.
 	c.add(time.Minute)
 	if ev := tr.Reconcile([]Incident{inc("a", c.now(), 95, "host=web-1")}); len(ev) != 0 {
 		t.Fatalf("no second escalation within the band, got %+v", ev)
@@ -145,15 +137,13 @@ func TestTrackerDistinguishesUnrelatedIncidents(t *testing.T) {
 	}
 }
 
-// A growing incident (a new entity joins) should match the open one by overlap,
-// not spawn a duplicate.
 func TestTrackerMatchesByOverlapAsIncidentGrows(t *testing.T) {
 	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(c)
 	tr.Reconcile([]Incident{inc("a", c.now(), 80, "service=checkout", "service=cart")})
 
 	c.add(time.Minute)
-	// Now checkout+cart+payments — 2/3 overlap, above the 0.5 threshold.
+
 	ev := tr.Reconcile([]Incident{inc("a2", c.now(), 85, "service=checkout", "service=cart", "service=payments")})
 	if len(ev) != 0 {
 		t.Fatalf("a growing incident should match, not re-open: %+v", ev)
@@ -163,9 +153,6 @@ func TestTrackerMatchesByOverlapAsIncidentGrows(t *testing.T) {
 	}
 }
 
-// P1-L5 regression: a spreading incident (some entities recover, new ones join)
-// must stay ONE incident, not flap into resolve+new. Jaccard would drop below
-// 0.5 as the set churns; the overlap coefficient keeps it matched.
 func TestTrackerDoesNotFlapAsIncidentSpreads(t *testing.T) {
 	c := &clk{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(c)
@@ -174,8 +161,7 @@ func TestTrackerDoesNotFlapAsIncidentSpreads(t *testing.T) {
 	id := ev[0].Incident.ID
 
 	c.add(time.Minute)
-	// web-1 recovered; web-3, web-4 joined. Jaccard({1,2},{2,3,4})=0.25<0.5, but
-	// overlap coefficient = 1/2 = 0.5 → still the same incident.
+
 	ev = tr.Reconcile([]Incident{inc("a2", c.now(), 90, "host=web-2", "host=web-3", "host=web-4")})
 	if len(ev) != 0 {
 		t.Fatalf("a spreading incident must not open a new one, got %+v", ev)

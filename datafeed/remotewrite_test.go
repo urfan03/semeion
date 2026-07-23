@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// ── tiny protobuf + literal-snappy encoders (test-only) ──────────────────────
-
 func pbTag(field, wire int) []byte {
 	return binary.AppendUvarint(nil, uint64(field<<3|wire))
 }
@@ -28,8 +26,6 @@ func pbFixed64(field int, bits uint64) []byte {
 	return append(out, b[:]...)
 }
 
-// snappyEncodeLiteral emits a valid Snappy BLOCK that stores data as literals
-// only (uncompressed) — enough to exercise the decoder round-trip.
 func snappyEncodeLiteral(data []byte) []byte {
 	out := binary.AppendUvarint(nil, uint64(len(data)))
 	for i := 0; i < len(data); {
@@ -37,7 +33,7 @@ func snappyEncodeLiteral(data []byte) []byte {
 		if chunk > 60 {
 			chunk = 60
 		}
-		out = append(out, byte((chunk-1)<<2)) // literal tag, len-1 in the high 6 bits
+		out = append(out, byte((chunk-1)<<2))
 		out = append(out, data[i:i+chunk]...)
 		i += chunk
 	}
@@ -70,7 +66,7 @@ func TestParseRemoteWriteRoundTrip(t *testing.T) {
 	if len(samples) != 3 {
 		t.Fatalf("expected 3 samples, got %d", len(samples))
 	}
-	// First sample.
+
 	s0 := samples[0]
 	if s0.Metric != "http_requests_total" || s0.Point.Value != 100 {
 		t.Fatalf("sample 0 wrong: %+v", s0)
@@ -84,7 +80,7 @@ func TestParseRemoteWriteRoundTrip(t *testing.T) {
 	if !s0.Point.Time.Equal(time.UnixMilli(ts).UTC()) {
 		t.Fatalf("timestamp not decoded: %v", s0.Point.Time)
 	}
-	// Third sample is the cpu series.
+
 	if samples[2].Metric != "cpu_seconds" || math.Abs(samples[2].Point.Value-0.42) > 1e-9 {
 		t.Fatalf("sample 2 wrong: %+v", samples[2])
 	}

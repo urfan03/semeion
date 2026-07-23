@@ -32,8 +32,7 @@ func TestParseMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 2 gauge + 1 sum + 1 histogram (the zero-count one carries no observation,
-	// and the timestamp-less point is unusable).
+
 	if len(pts) != 4 {
 		t.Fatalf("expected 4 points, got %d: %+v", len(pts), pts)
 	}
@@ -59,11 +58,11 @@ func TestParseMetrics(t *testing.T) {
 	if g[0].Point.Fields["host"] != "web-1" {
 		t.Errorf("point attribute missing: %v", g[0].Point.Fields)
 	}
-	// The resource attribute must not leak into the sibling point that lacks it…
+
 	if g[1].Point.Fields["host"] != "" {
 		t.Errorf("attributes leaked between points: %v", g[1].Point.Fields)
 	}
-	// …but the shared resource attribute must still be there.
+
 	if g[1].Point.Fields["service.name"] != "checkout" {
 		t.Errorf("resource attribute lost: %v", g[1].Point.Fields)
 	}
@@ -72,7 +71,7 @@ func TestParseMetrics(t *testing.T) {
 	}
 
 	h := byMetric["db.latency"]
-	if len(h) != 1 || h[0].Point.Value != 50 { // 200/4
+	if len(h) != 1 || h[0].Point.Value != 50 {
 		t.Errorf("histogram should score the mean: %+v", h)
 	}
 	if g[0].Point.Time.Unix() != 1767225600 {
@@ -101,7 +100,7 @@ func TestParseLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The empty-body record is dropped; the observed-time-only record is kept.
+
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %+v", len(lines), lines)
 	}

@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// Status is where an incident is in its life.
 type Status string
 
 const (
@@ -15,61 +14,44 @@ const (
 	StatusResolved Status = "resolved"
 )
 
-// EventKind is why the tracker emitted an event.
 type EventKind string
 
 const (
-	Opened    EventKind = "opened"    // a new incident appeared
-	Escalated EventKind = "escalated" // an open incident crossed into a higher severity band
-	Resolved  EventKind = "resolved"  // an open incident went quiet long enough to close
+	Opened    EventKind = "opened"
+	Escalated EventKind = "escalated"
+	Resolved  EventKind = "resolved"
 )
 
-// Tracked is an incident with lifecycle state layered on top. The embedded
-// Incident is refreshed on every reconcile; the lifecycle fields persist.
 type Tracked struct {
 	Incident
 	Status       Status    `json:"status"`
 	OpenedAt     time.Time `json:"opened_at"`
 	LastActivity time.Time `json:"last_activity"`
 	ResolvedAt   time.Time `json:"resolved_at,omitempty"`
-	Seen         int       `json:"seen"`       // reconcile passes it appeared in
-	PeakScore    float64   `json:"peak_score"` // highest score ever seen
+	Seen         int       `json:"seen"`
+	PeakScore    float64   `json:"peak_score"`
 }
 
-// Event is a lifecycle transition worth alerting on.
 type Event struct {
 	Kind     EventKind `json:"kind"`
 	Incident Tracked   `json:"incident"`
 }
 
-// Tracker gives incidents identity over time.
-//
-// `Correlate` is stateless: called twice on overlapping data it returns two
-// fresh sets with no memory that they describe the same ongoing event. The
-// tracker closes that gap — it matches each freshly correlated incident to an
-// open one by entity overlap, so a persistent incident is opened once (and
-// alerted once), grows in place, and resolves when it finally goes quiet.
-//
-// It is safe for concurrent use; the server reconciles on the ingest path.
 type Tracker struct {
 	mu       sync.Mutex
 	open     map[string]*Tracked
 	resolved []*Tracked
 	seq      int
 
-	// ResolveAfter closes an incident once no fresh symptom has arrived for this
-	// long, measured against Now (default 15m).
 	ResolveAfter time.Duration
-	// MatchOverlap is the minimum entity overlap coefficient (|∩|/min) to treat a
-	// fresh incident as the continuation of an open one (default 0.5).
+
 	MatchOverlap float64
-	// MaxResolved bounds the retained resolved history (default 500).
+
 	MaxResolved int
-	// Now is injectable for tests; defaults to time.Now.
+
 	Now func() time.Time
 }
 
-// NewTracker returns a tracker with production defaults.
 func NewTracker() *Tracker {
 	return &Tracker{
 		open:         map[string]*Tracked{},
@@ -100,9 +82,6 @@ func (t *Tracker) matchOverlap() float64 {
 	return t.MatchOverlap
 }
 
-// Reconcile folds a freshly correlated set into the tracked state and returns
-// the lifecycle events that resulted. The events are the alertable moments —
-// they fire once per transition, never once per poll.
 func (t *Tracker) Reconcile(fresh []Incident) []Event {
 	now := t.now()
 	t.mu.Lock()
@@ -111,8 +90,6 @@ func (t *Tracker) Reconcile(fresh []Incident) []Event {
 	var events []Event
 	used := map[string]bool{}
 
-	// Match each fresh incident to at most one open incident, best overlap first,
-	// so a fresh incident can't be stolen by a weaker match.
 	type pairing struct {
 		fresh Incident
 		key   string
@@ -126,7 +103,7 @@ func (t *Tracker) Reconcile(fresh []Incident) []Event {
 	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].score > pairs[j].score })
 
 	for _, p := range pairs {
-		// Re-check the match: an earlier, stronger pairing may have claimed it.
+
 		key := p.key
 		if key == "" || used[key] {
 			key, _ = t.bestMatch(p.fresh, used)
@@ -151,7 +128,6 @@ func (t *Tracker) Reconcile(fresh []Incident) []Event {
 			continue
 		}
 
-		// New incident.
 		t.seq++
 		id := fmt.Sprintf("inc-%d-%04d", now.Unix(), t.seq)
 		tr := &Tracked{
@@ -169,7 +145,6 @@ func (t *Tracker) Reconcile(fresh []Incident) []Event {
 		events = append(events, Event{Kind: Opened, Incident: *tr})
 	}
 
-	// Resolve any open incident that had no fresh match and has gone quiet.
 	for key, o := range t.open {
 		if used[key] {
 			continue
@@ -187,8 +162,6 @@ func (t *Tracker) Reconcile(fresh []Incident) []Event {
 	return events
 }
 
-// bestMatch finds the open incident with the greatest entity overlap above the
-// threshold, skipping any already claimed this pass.
 func (t *Tracker) bestMatch(f Incident, used map[string]bool) (string, float64) {
 	fe := entitySet(f)
 	bestKey, best := "", t.matchOverlap()
@@ -197,7 +170,7 @@ func (t *Tracker) bestMatch(f Incident, used map[string]bool) (string, float64) 
 			continue
 		}
 		if j := overlapCoefficient(fe, entitySet(o.Incident)); j >= best {
-			// >= so the threshold itself counts; ties broken by key for determinism.
+
 			if j > best || key < bestKey || bestKey == "" {
 				best, bestKey = j, key
 			}
@@ -209,7 +182,6 @@ func (t *Tracker) bestMatch(f Incident, used map[string]bool) (string, float64) 
 	return bestKey, best
 }
 
-// Open returns the currently open incidents, most recently active first.
 func (t *Tracker) Open() []Tracked {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -221,7 +193,6 @@ func (t *Tracker) Open() []Tracked {
 	return out
 }
 
-// Resolved returns recently resolved incidents, most recently resolved first.
 func (t *Tracker) Resolved() []Tracked {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -232,14 +203,12 @@ func (t *Tracker) Resolved() []Tracked {
 	return out
 }
 
-// TrackerSnapshot is a serializable copy of a tracker's state.
 type TrackerSnapshot struct {
 	Open     []Tracked `json:"open"`
 	Resolved []Tracked `json:"resolved"`
 	Seq      int       `json:"seq"`
 }
 
-// Snapshot returns the tracker's state for persistence.
 func (t *Tracker) Snapshot() TrackerSnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -253,8 +222,6 @@ func (t *Tracker) Snapshot() TrackerSnapshot {
 	return s
 }
 
-// Restore replaces the tracker's state from a snapshot. Open incidents are
-// re-keyed by their stored id so Reconcile continues to match them.
 func (t *Tracker) Restore(s TrackerSnapshot) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -281,9 +248,6 @@ func (t *Tracker) trimResolved() {
 	}
 }
 
-// entitySet is an incident's identity for matching: its affected entities, or,
-// when it has none (e.g. pure-log incidents with no influencers), its jobs — so
-// two entity-less incidents on different jobs still stay distinct.
 func entitySet(inc Incident) map[string]bool {
 	set := map[string]bool{}
 	for e := range inc.Entities {
@@ -297,13 +261,6 @@ func entitySet(inc Incident) map[string]bool {
 	return set
 }
 
-// overlapCoefficient = |a ∩ b| / min(|a|,|b|). Unlike Jaccard, it stays high as
-// an incident SPREADS: when {web-1,web-2} becomes {web-2,web-3,web-4} their
-// Jaccard is only 0.25 (they'd be treated as two incidents — one spuriously
-// resolved, a fresh one paged), but the overlap coefficient is 0.5 because the
-// shared web-2 is half of the smaller set. That keeps one spreading outage a
-// single, stable incident. (Coarse attributes can't inflate this — they are
-// stripped from grouping upstream, so incident entity sets are identities.)
 func overlapCoefficient(a, b map[string]bool) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
@@ -321,14 +278,12 @@ func overlapCoefficient(a, b map[string]bool) float64 {
 	return float64(inter) / float64(min)
 }
 
-// severityBand buckets a score the way an on-call reads it, so escalation fires
-// on a band crossing (warning → critical) rather than on every point of drift.
 func severityBand(score float64) int {
 	switch {
 	case score >= 75:
-		return 2 // critical
+		return 2
 	case score >= 50:
-		return 1 // warning
+		return 1
 	default:
 		return 0
 	}

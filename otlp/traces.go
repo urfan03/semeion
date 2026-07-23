@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// Span is the part of an OTLP span semeion needs to reconstruct who calls whom.
 type Span struct {
 	TraceID  string
 	SpanID   string
@@ -19,7 +18,6 @@ type Span struct {
 	Attrs    map[string]string
 }
 
-// Duration is the span's wall time (zero when the emitter omitted an end).
 func (s Span) Duration() time.Duration {
 	if s.End.IsZero() || s.Start.IsZero() {
 		return 0
@@ -47,11 +45,6 @@ type tracesPayload struct {
 	} `json:"resourceSpans"`
 }
 
-// ParseTraces decodes an OTLP/JSON ExportTraceServiceRequest.
-//
-// The service name comes from the resource (`service.name`), which is what makes
-// a span attributable to a node in the dependency graph; a span without one is
-// dropped rather than guessed at.
 func ParseTraces(body []byte) ([]Span, error) {
 	var p tracesPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -71,7 +64,7 @@ func ParseTraces(body []byte) ([]Span, error) {
 				out = append(out, Span{
 					TraceID: sp.TraceID, SpanID: sp.SpanID, ParentID: sp.ParentSpanID,
 					Name: sp.Name, Service: service, Start: start, End: end,
-					// OTLP status: UNSET / OK / ERROR (numeric 2 in the proto form).
+
 					Error: sp.Status.Code == "STATUS_CODE_ERROR" || sp.Status.Code == "ERROR" || sp.Status.Code == "2",
 					Attrs: attrs(sp.Attributes, base),
 				})

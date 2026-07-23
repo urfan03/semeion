@@ -5,17 +5,13 @@ import (
 	"time"
 )
 
-// rateLimiter is a minimal token bucket (dependency-free): tokens refill at
-// `rate` per second up to `burst`, and each request spends one. It is process-
-// wide, not per-client — a coarse backstop against a runaway producer, not a
-// fairness mechanism.
 type rateLimiter struct {
 	mu     sync.Mutex
-	rate   float64 // tokens per second
-	burst  float64 // max tokens
+	rate   float64
+	burst  float64
 	tokens float64
 	last   time.Time
-	now    func() time.Time // injectable for tests
+	now    func() time.Time
 }
 
 func newRateLimiter(rate, burst float64) *rateLimiter {
@@ -32,7 +28,6 @@ func (l *rateLimiter) clock() time.Time {
 	return time.Now()
 }
 
-// allow reports whether a request may proceed, spending a token if so.
 func (l *rateLimiter) allow() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -40,7 +35,7 @@ func (l *rateLimiter) allow() bool {
 	if l.last.IsZero() {
 		l.last = t
 	}
-	// Refill for the elapsed time.
+
 	l.tokens += l.rate * t.Sub(l.last).Seconds()
 	if l.tokens > l.burst {
 		l.tokens = l.burst

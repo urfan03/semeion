@@ -14,32 +14,21 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// ClickHouseSource runs SQL against ClickHouse's HTTP interface and turns the
-// rows into points. The query must select a time column and a value column;
-// any other column becomes a dimension (string) or a named metric (number).
-//
-// Use {{start}} / {{end}} placeholders for the window, e.g.
-//
-//	SELECT toStartOfMinute(ts) AS time, avg(latency) AS value, host
-//	FROM metrics WHERE ts BETWEEN {{start}} AND {{end}} GROUP BY time, host ORDER BY time
 type ClickHouseSource struct {
-	BaseURL  string // e.g. http://localhost:8123
-	Query    string // SQL with {{start}}/{{end}}
-	TimeCol  string // default "time"
-	ValueCol string // default "value"
+	BaseURL  string
+	Query    string
+	TimeCol  string
+	ValueCol string
 	Database string
 	User     string
 	Password string
 	HTTP     *http.Client
 }
 
-// NewClickHouseSource builds a ClickHouse source with the default HTTP client.
 func NewClickHouseSource(baseURL, query string) *ClickHouseSource {
 	return &ClickHouseSource{BaseURL: baseURL, Query: query, TimeCol: "time", ValueCol: "value", HTTP: http.DefaultClient}
 }
 
-// Fetch runs the query for [start, end] and returns the rows as points. step is
-// accepted for the Source interface but the SQL controls the bucketing.
 func (c *ClickHouseSource) Fetch(ctx context.Context, start, end time.Time, _ time.Duration) ([]core.DataPoint, error) {
 	sql := strings.NewReplacer(
 		"{{start}}", "toDateTime("+strconv.FormatInt(start.Unix(), 10)+")",
@@ -131,7 +120,6 @@ func parseClickHouse(body []byte, timeCol, valueCol string) ([]core.DataPoint, e
 	return out, nil
 }
 
-// parseCHTime accepts ClickHouse's "2026-01-01 00:00:00", RFC3339, or an epoch.
 func parseCHTime(v any) (time.Time, error) {
 	switch t := v.(type) {
 	case string:

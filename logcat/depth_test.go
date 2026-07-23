@@ -7,14 +7,12 @@ import (
 	"github.com/urfan03/semeion/core"
 )
 
-// #10: a category keeps several DISTINCT example messages (not just one), counts
-// its cumulative matches, and is exposed via Categories() with a stable id.
 func TestCategorizationDepthExamplesAndCounts(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	c := NewCategorizer(time.Minute)
 
 	var lines []core.LogLine
-	// One template ("GET /user/<id> took <n>ms"), many distinct concrete messages.
+
 	for b := 0; b < 30; b++ {
 		bt := t0.Add(time.Duration(b) * time.Minute)
 		for i := 0; i < 5; i++ {
@@ -44,7 +42,7 @@ func TestCategorizationDepthExamplesAndCounts(t *testing.T) {
 	if len(def.Examples) != catMaxExamples {
 		t.Fatalf("expected %d distinct examples, got %d (%v)", catMaxExamples, len(def.Examples), def.Examples)
 	}
-	// The examples must be distinct.
+
 	seen := map[string]bool{}
 	for _, e := range def.Examples {
 		if seen[e] {
@@ -57,7 +55,6 @@ func TestCategorizationDepthExamplesAndCounts(t *testing.T) {
 	}
 }
 
-// #10: examples + match counts survive Snapshot/Restore.
 func TestCategorizationDepthSnapshotRoundTrip(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	c := NewCategorizer(time.Minute)
@@ -85,7 +82,6 @@ func TestCategorizationDepthSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-// itoa avoids importing strconv into the test for a single small conversion.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

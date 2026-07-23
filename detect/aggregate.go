@@ -8,18 +8,11 @@ import (
 	"github.com/urfan03/semeion/stats"
 )
 
-// Aggregate reduces one bucket's points to a single value per the detector
-// function. For count the points are counted (an empty bucket is a legitimate
-// count of 0); every other function reduces the metric — the named field from
-// each point's Values (falling back to Value when absent). The bool is false
-// when the function can't produce a value (e.g. a metric over 0 points).
 func Aggregate(fn jobspec.Function, field string, pts []core.DataPoint) (float64, bool) {
 	if fn == jobspec.FuncCount {
 		return float64(len(pts)), true
 	}
-	// distinct_count is a cardinality over the bucket: how many distinct values
-	// of `field` appear (string dimension or numeric). An empty bucket is a
-	// legitimate count of 0.
+
 	if fn == jobspec.FuncDistinctCount {
 		seen := make(map[string]struct{}, len(pts))
 		for _, p := range pts {
@@ -45,17 +38,16 @@ func Aggregate(fn jobspec.Function, field string, pts []core.DataPoint) (float64
 		return float64(n), true
 	case jobspec.FuncVarp:
 		_, std := stats.MeanStd(vals)
-		return std * std, true // population variance
+		return std * std, true
 	case jobspec.FuncSum, jobspec.FuncNonNullSum:
-		// non_null_sum == sum here: our points carry no null metric, so every
-		// present value contributes.
+
 		var s float64
 		for _, v := range vals {
 			s += v
 		}
 		return s, true
 	case jobspec.FuncMean, jobspec.FuncMetric:
-		// metric is scored on the mean (its central summary).
+
 		var s float64
 		for _, v := range vals {
 			s += v
@@ -84,8 +76,6 @@ func Aggregate(fn jobspec.Function, field string, pts []core.DataPoint) (float64
 	}
 }
 
-// distinctKey renders the value of `field` for cardinality counting: the string
-// dimension if present, else the numeric metric, else the point's Value.
 func distinctKey(p core.DataPoint, field string) string {
 	if field != "" {
 		if p.Fields != nil {
@@ -102,8 +92,6 @@ func distinctKey(p core.DataPoint, field string) string {
 	return strconv.FormatFloat(p.Value, 'g', -1, 64)
 }
 
-// valueOf reads a point's metric: the named field from Values, or Value when the
-// field is unset/absent (keeps single-metric inputs working unchanged).
 func valueOf(p core.DataPoint, field string) float64 {
 	if field != "" && p.Values != nil {
 		if v, ok := p.Values[field]; ok {

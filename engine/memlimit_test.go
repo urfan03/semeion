@@ -9,8 +9,6 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// C7 regression: a high-cardinality by_field must not grow the model maps
-// without bound — the LRU evicts the least-recently-used series past MaxSeries.
 func TestModelMemoryBounded(t *testing.T) {
 	job := jobspec.Job{Name: "hc", BucketSpan: time.Minute,
 		Detectors: []jobspec.Detector{{Function: jobspec.FuncMean, Field: "v", ByField: "id"}}}
@@ -21,7 +19,7 @@ func TestModelMemoryBounded(t *testing.T) {
 	eng.MaxSeries = 100
 
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// 5000 distinct by-field values across buckets — each a new series.
+
 	for i := 0; i < 5000; i++ {
 		id := fmt.Sprintf("id-%d", i)
 		eng.Run([]core.DataPoint{{
@@ -29,7 +27,7 @@ func TestModelMemoryBounded(t *testing.T) {
 			Fields: map[string]string{"id": id}, Values: map[string]float64{"v": 100},
 		}}, 50)
 	}
-	if n := len(eng.models); n > 120 { // cap 100 + a batch's slack
+	if n := len(eng.models); n > 120 {
 		t.Fatalf("model map grew unbounded: %d resident (cap 100)", n)
 	}
 	if len(eng.seriesLRU) > 120 {

@@ -1,7 +1,3 @@
-// Package api turns semeion into a service: a small stdlib HTTP server that
-// analyses posted data, keeps the latest results per job, serves them to
-// Grafana, and ships an embedded Anomaly Explorer UI. No framework, no external
-// dependencies — still one static binary.
 package api
 
 import (
@@ -32,9 +28,6 @@ import (
 //go:embed explorer.html
 var explorerHTML []byte
 
-// Server holds the latest results per job (in memory) and serves the API + UI.
-// It also hosts *live* jobs — resident engines fed by pushed or OTLP-exported
-// data (see live.go).
 type Server struct {
 	mu       sync.RWMutex
 	results  map[string][]core.BucketResult
@@ -42,43 +35,29 @@ type Server struct {
 	provider model.Provider
 	notifier *alert.Notifier
 
-	// outlierDetector is nil for the built-in ensemble.
 	outlierDetector outlier.Detector
 
-	// changes is the recent deploy/config log used for incident correlation.
 	changes []correlate.Change
 
-	// graph is the service dependency graph built from ingested traces; it
-	// gives incident correlation its causal direction.
 	graph *topology.Graph
 
-	// tracker gives incidents identity over time (open / resolve / dedupe).
 	tracker *correlate.Tracker
 
-	// slos holds named error-budget series fed over time via /v1/slo/{name}.
 	slos map[string]*sloSeries
 
-	// onAlertError reports a failing sink without touching detection.
 	onAlertError func(error)
 
-	// alertsSent counts alerts delivered to sinks (record + lifecycle), for /metrics.
 	alertsSent atomic.Int64
 
-	// authToken, when set, is required as a bearer token on every endpoint
-	// except /healthz and /metrics. limiter, when set, rate-limits the API.
 	authToken string
 	limiter   *rateLimiter
 }
 
-// WithAuthToken requires this bearer token on all API endpoints (health and
-// metrics stay open). Empty leaves the API unauthenticated.
 func (s *Server) WithAuthToken(token string) *Server {
 	s.authToken = token
 	return s
 }
 
-// WithRateLimit caps sustained request rate at rps (with a burst of 2×rps).
-// Zero disables limiting.
 func (s *Server) WithRateLimit(rps float64) *Server {
 	if rps > 0 {
 		s.limiter = newRateLimiter(rps, rps*2)
@@ -86,7 +65,6 @@ func (s *Server) WithRateLimit(rps float64) *Server {
 	return s
 }
 
-// NewServer builds a server with the default (pure-Go) model provider.
 func NewServer() *Server {
 	return &Server{
 		results:  make(map[string][]core.BucketResult),
@@ -97,13 +75,11 @@ func NewServer() *Server {
 	}
 }
 
-// OnAlertError installs a callback for sink failures during live ingestion.
 func (s *Server) OnAlertError(f func(error)) *Server {
 	s.onAlertError = f
 	return s
 }
 
-// WithProvider swaps the heavy-model provider (e.g. the Python plane).
 func (s *Server) WithProvider(p model.Provider) *Server {
 	if p != nil {
 		s.provider = p
@@ -111,21 +87,17 @@ func (s *Server) WithProvider(p model.Provider) *Server {
 	return s
 }
 
-// WithOutlierDetector swaps the batch outlier detector (e.g. the pyod-backed
-// Python plane). Nil keeps the built-in ensemble.
 func (s *Server) WithOutlierDetector(d outlier.Detector) *Server {
 	s.outlierDetector = d
 	return s
 }
 
-// Store publishes results under a job name (used to seed the demo).
 func (s *Server) Store(job string, results []core.BucketResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.results[job] = results
 }
 
-// Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/analyze", s.handleAnalyze)
@@ -146,13 +118,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/results/", s.handleResults)
 	mux.HandleFunc("/v1/influencers/", s.handleInfluencers)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
-	// Grafana SimpleJSON datasource surface (interactive; point a datasource here).
+
 	mux.HandleFunc("/grafana/search", s.handleGrafanaSearch)
 	mux.HandleFunc("/grafana/query", s.handleGrafanaQuery)
 	mux.HandleFunc("/grafana/annotations", s.handleGrafanaAnnotations)
 	mux.HandleFunc("/grafana/", s.handleGrafanaRoot)
-	// OTLP/HTTP paths, so an OpenTelemetry Collector can point `otlphttp` at
-	// this server directly (endpoint: http://semeion:8080/v1/otlp).
+
 	mux.HandleFunc("/v1/otlp/v1/metrics", s.handleOTLPMetrics)
 	mux.HandleFunc("/v1/otlp/v1/logs", s.handleOTLPLogs)
 	mux.HandleFunc("/v1/otlp/v1/traces", s.handleOTLPTraces)
@@ -163,8 +134,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", s.handleUI)
 
-	// Middleware chain (outermost first): cap request bodies, rate-limit, then
-	// require the auth token. /healthz and /metrics stay open for probes/scrape.
 	var h http.Handler = mux
 	h = s.withAuth(h)
 	h = s.withRateLimit(h)
@@ -172,9 +141,6 @@ func (s *Server) Handler() http.Handler {
 	return h
 }
 
-// withBodyLimit caps every request body so a single large unauthenticated POST
-// (e.g. to /v1/analyze or /v1/jobs/{name}/points, which decode straight from the
-// body) cannot exhaust memory.
 func withBodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
@@ -184,10 +150,6 @@ func withBodyLimit(next http.Handler) http.Handler {
 	})
 }
 
-// withAuth requires a bearer token on all endpoints except health/metrics, when
-// a token is configured (WithAuthToken). With no token set, the API is open —
-// the same default as before, so existing deployments are unaffected until they
-// opt in.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.authToken == "" || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
@@ -203,8 +165,6 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 	})
 }
 
-// withRateLimit applies a simple token-bucket limiter across the API when one is
-// configured (WithRateLimit). Health/metrics are exempt.
 func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.limiter == nil || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
@@ -219,8 +179,6 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-// ── handlers ─────────────────────────────────────────────────────────────────
 
 type analyzeRequest struct {
 	Job         json.RawMessage  `json:"job"`
@@ -301,8 +259,7 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Series  []float64 `json:"series"`
 		Horizon int       `json:"horizon"`
-		// Optional predictive breach check: does the forecast cross Threshold
-		// within the horizon? Side "high" tests an upper limit, "low" a lower one.
+
 		Threshold *float64 `json:"threshold,omitempty"`
 		Side      string   `json:"side,omitempty"`
 	}
@@ -325,9 +282,6 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// handleChangePoints returns the mean-shift change points of a series, the
-// stable regimes between them, and the probability that the most recent regime
-// is a genuine shift (the baseline moved) rather than a transient.
 func (s *Server) handleChangePoints(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -347,10 +301,6 @@ func (s *Server) handleChangePoints(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleLeadLag runs the causality primitives. With `candidates` it ranks each
-// candidate series by how strongly it leads the `target` series (RCA ordering —
-// what moved first); with a bare `a`/`b` pair it returns the pairwise lead-lag
-// and Granger result.
 func (s *Server) handleLeadLag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "POST required")
@@ -394,8 +344,6 @@ func (s *Server) handleLeadLag(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleJobs lists every job the server knows about — analysed batches and
-// live jobs alike, so the Explorer shows both.
 func (s *Server) handleJobs(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	seen := make(map[string]bool, len(s.results)+len(s.live))
@@ -418,10 +366,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"jobs": names, "live": live})
 }
 
-// maxBodyBytes caps an ingest request. An OTLP export is the one endpoint an
-// untrusted collector can point at us; an unbounded read would be a trivial
-// memory-exhaustion vector.
-const maxBodyBytes = 32 << 20 // 32 MiB
+const maxBodyBytes = 32 << 20
 
 func readLimited(r *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
@@ -434,7 +379,6 @@ func readLimited(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// handleResults returns the stored results for /v1/results/{job}.
 func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
 	job := strings.TrimPrefix(r.URL.Path, "/v1/results/")
 	s.mu.RLock()
@@ -447,10 +391,6 @@ func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"job": job, "results": res})
 }
 
-// handleInfluencers rolls a job's results up into a ranked list of the entities
-// (host/user/service/…) that carried the most anomalous mass — the "who is
-// responsible" view over the whole window. Optional ?field=host filters to one
-// dimension.
 func (s *Server) handleInfluencers(w http.ResponseWriter, r *http.Request) {
 	job := strings.TrimPrefix(r.URL.Path, "/v1/influencers/")
 	s.mu.RLock()
@@ -466,8 +406,6 @@ func (s *Server) handleInfluencers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGrafana returns a flat time/score series for /v1/grafana/{job} — the
-// shape Grafana's Infinity (or any JSON) datasource can graph directly.
 func (s *Server) handleGrafana(w http.ResponseWriter, r *http.Request) {
 	job := strings.TrimPrefix(r.URL.Path, "/v1/grafana/")
 	s.mu.RLock()
@@ -478,7 +416,7 @@ func (s *Server) handleGrafana(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type point struct {
-		Time     int64   `json:"time"` // epoch millis (Grafana convention)
+		Time     int64   `json:"time"`
 		Score    float64 `json:"score"`
 		Detector string  `json:"detector,omitempty"`
 		Series   string  `json:"series,omitempty"`
@@ -505,8 +443,6 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(explorerHTML)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
@@ -518,7 +454,6 @@ func httpError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// ListenAndServe starts the API + UI on addr.
 func (s *Server) ListenAndServe(addr string) error {
 	srv := &http.Server{
 		Addr:              addr,

@@ -8,8 +8,6 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 )
 
-// On a stationary series with clearly injected spikes, the robust detector must
-// catch every anomaly (recall 1.0) with few false positives (precision high).
 func TestEngineQualityOnSpikes(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	span := time.Minute

@@ -33,7 +33,7 @@ func TestExplainChangeLedIncidentRecommendsRollback(t *testing.T) {
 	if !strings.Contains(b.Narrative, "checkout v2.3.1") {
 		t.Errorf("narrative should name the change: %q", b.Narrative)
 	}
-	// Every action must carry a rationale — no generic filler.
+
 	for _, a := range b.Actions {
 		if a.Rationale == "" {
 			t.Errorf("action %q has no rationale", a.Title)
@@ -102,8 +102,6 @@ func TestExplainNoRootCause(t *testing.T) {
 	}
 }
 
-// The prompt handed to an LLM must forbid invention and carry the decided
-// actions — that is what keeps a summariser from becoming a detector.
 func TestPromptIsGroundedAndForbidsInvention(t *testing.T) {
 	inc := correlate.Incident{
 		ID: "inc-4", Start: t0, End: t0.Add(time.Minute),

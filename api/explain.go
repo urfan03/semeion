@@ -9,12 +9,6 @@ import (
 	"github.com/urfan03/semeion/explain"
 )
 
-// handleExplain returns the deterministic brief for one incident, plus the
-// grounded prompt a caller can hand to an LLM for prose. The incident is looked
-// up first among the tracked (stateful) incidents by id, then — if not tracked
-// — recomputed from the current store.
-//
-//	GET /v1/explain/{id}
 func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/explain/")
 	if id == "" {
@@ -30,12 +24,10 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	brief := explain.Explain(inc)
 	writeJSON(w, map[string]any{
 		"brief":  brief,
-		"prompt": explain.Prompt(brief), // hand to a copilot/LLM to narrate; semeion ships no model
+		"prompt": explain.Prompt(brief),
 	})
 }
 
-// findIncident resolves an id to an incident: a tracked one keeps its lifecycle,
-// otherwise the current store is correlated and searched.
 func (s *Server) findIncident(id string) (correlate.Incident, bool) {
 	for _, tr := range s.tracker.Open() {
 		if tr.ID == id {
