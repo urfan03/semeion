@@ -523,6 +523,9 @@ func jobStatus(lj *liveJob) map[string]any {
 	if lj.Metric != "" {
 		st["metric"] = lj.Metric
 	}
+	if len(lj.Spec.Groups) > 0 {
+		st["groups"] = lj.Spec.Groups
+	}
 	if !lj.Last.IsZero() {
 		st["last_point"] = lj.Last
 	}

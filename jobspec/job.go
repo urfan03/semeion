@@ -136,8 +136,18 @@ type Job struct {
 	Detectors   []Detector    `json:"detectors"             yaml:"detectors"`
 	Influencers []string      `json:"influencers,omitempty" yaml:"influencers,omitempty"`
 	Calendars   []Calendar    `json:"calendars,omitempty"   yaml:"calendars,omitempty"`
+	Groups      []string      `json:"groups,omitempty"      yaml:"groups,omitempty"`
 
 	Sensitivity float64 `json:"sensitivity,omitempty" yaml:"sensitivity,omitempty"`
+}
+
+func (j Job) InGroup(group string) bool {
+	for _, g := range j.Groups {
+		if g == group {
+			return true
+		}
+	}
+	return false
 }
 
 func (d Detector) NeedsField() bool {

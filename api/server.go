@@ -54,7 +54,8 @@ type Server struct {
 	authToken string
 	limiter   *rateLimiter
 
-	history *store.ResultLog
+	history   *store.ResultLog
+	forecasts forecastStore
 }
 
 func (s *Server) WithHistory(dir string) *Server {
@@ -114,6 +115,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/analyze", s.handleAnalyze)
 	mux.HandleFunc("/v1/autopilot", s.handleAutopilot)
 	mux.HandleFunc("/v1/forecast", s.handleForecast)
+	mux.HandleFunc("/v1/forecasts", s.handleForecasts)
+	mux.HandleFunc("/v1/forecasts/", s.handleForecasts)
 	mux.HandleFunc("/v1/changepoints", s.handleChangePoints)
 	mux.HandleFunc("/v1/leadlag", s.handleLeadLag)
 	mux.HandleFunc("/v1/outliers", s.handleOutliers)
@@ -359,14 +362,29 @@ func (s *Server) handleLeadLag(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleJobs(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
+	group := r.URL.Query().Get("group")
 	s.mu.RLock()
 	seen := make(map[string]bool, len(s.results)+len(s.live))
+	inGroup := func(name string) bool {
+		if group == "" {
+			return true
+		}
+		if lj, ok := s.live[name]; ok {
+			return lj.Spec.InGroup(group)
+		}
+		return false
+	}
 	for k := range s.results {
-		seen[k] = true
+		if inGroup(k) {
+			seen[k] = true
+		}
 	}
 	live := make([]string, 0, len(s.live))
 	for k := range s.live {
+		if !inGroup(k) {
+			continue
+		}
 		seen[k] = true
 		live = append(live, k)
 	}
