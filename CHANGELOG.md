@@ -4,6 +4,38 @@ All notable changes to semeion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+Eight capability additions (each with a regression test; all 21 packages green).
+The Go source is comment-free by project convention; docs live in README/CHANGELOG.
+
+### Detection & statistics
+- **ratio / SLI detector** (`ratio`, `field` / `denom_field`): scores a per-bucket
+  numerator/denominator (error rate, cache-miss %, success ratio) directly.
+- **Holt-Winters (ETS) forecasting**: an additive triple-exponential-smoothing
+  forecaster (grid-searched α/β/γ) replaces seasonal-naïve when a period is
+  present, sharpening the forecast and its bands / breach checks.
+- **Ensemble / voting** (`engine.Ensemble`): combines multiple detectors' scores
+  for the same series-bucket by Fisher-style tail-probability product, so
+  detectors agreeing compounds severity above any single one.
+
+### Operations & reliability
+- **Datafeed staleness watchdog** (`Engine.Stale`, `GET /v1/jobs/{name}/stale`):
+  reports series that have gone silent relative to the latest bucket — a dead
+  exporter that no value detector would catch.
+- **Durable result store + history API** (`store.ResultLog`, `GET /v1/history/{job}`,
+  `serve --history DIR`): append-only NDJSON log of anomalies, queryable by time
+  range, so history survives the in-memory ring.
+- **Feedback-driven suppression** (`Engine.MarkFalsePositive`,
+  `POST /v1/jobs/{name}/feedback`): marking a series' anomalies as false positives
+  raises that series' bar, damping a recurring nuisance without touching others.
+
+### Adoption
+- **Job catalog** (`catalog`, `GET /v1/catalog`): ready-made detector sets for
+  nginx, kubernetes, postgres, redis, jvm — plug-and-play in one call.
+- **OpenAPI spec** (`GET /openapi.json`): the full REST surface as an OpenAPI 3
+  document for client generation.
+
 ## [0.3.0]
 
 Cloudflare log anomaly detection, a proof-of-quality benchmark, and eleven

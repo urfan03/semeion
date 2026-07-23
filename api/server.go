@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/cloudflare/logs", s.handleCloudflareLogs)
 	mux.HandleFunc("/v1/prometheus/write", s.handlePromRemoteWrite)
 	mux.HandleFunc("/v1/topology", s.handleTopology)
+	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", s.handleUI)
