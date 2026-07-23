@@ -228,9 +228,28 @@ func (s *Server) handleLiveJobs(w http.ResponseWriter, r *http.Request) {
 		s.handleInterim(w, r, lj)
 	case action == "categories" && r.Method == http.MethodGet:
 		s.handleCategories(w, r, lj)
+	case action == "stale" && r.Method == http.MethodGet:
+		s.handleStale(w, r, lj)
 	default:
 		httpError(w, http.StatusNotFound, "unknown route")
 	}
+}
+
+func (s *Server) handleStale(w http.ResponseWriter, r *http.Request, lj *liveJob) {
+	if lj.Logs {
+		writeJSON(w, map[string]any{"job": lj.Name, "stale": []engine.StaleSeries{}})
+		return
+	}
+	maxAge := lj.Spec.BucketSpan * 5
+	if v := r.URL.Query().Get("max_age"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			maxAge = d
+		}
+	}
+	lj.mu.Lock()
+	stale := lj.eng.Stale(maxAge)
+	lj.mu.Unlock()
+	writeJSON(w, map[string]any{"job": lj.Name, "max_age": maxAge.String(), "stale": stale})
 }
 
 func (s *Server) handleCategories(w http.ResponseWriter, _ *http.Request, lj *liveJob) {

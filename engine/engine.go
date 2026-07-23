@@ -60,6 +60,8 @@ type Engine struct {
 
 	seriesLRU    map[string]int64
 	seriesScores map[string][]float64
+	lastSeen     map[string]time.Time
+	curBucket    time.Time
 	lruTick      int64
 	MaxSeries    int
 	Evicted      int64
@@ -117,6 +119,7 @@ func seriesKey(d jobspec.Detector, fields map[string]string) string {
 
 func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResult {
 	br := core.BucketResult{Time: bt}
+	e.curBucket = bt
 
 	if e.inCalendar(bt) {
 		return br
@@ -723,12 +726,45 @@ func (e *Engine) touchSeries(key string) {
 	if e.seriesLRU == nil {
 		e.seriesLRU = make(map[string]int64)
 	}
+	if e.lastSeen == nil {
+		e.lastSeen = make(map[string]time.Time)
+	}
+	if !e.curBucket.IsZero() {
+		e.lastSeen[key] = e.curBucket
+	}
 	e.lruTick++
 	_, existed := e.seriesLRU[key]
 	e.seriesLRU[key] = e.lruTick
 	if !existed {
 		e.evictSeries()
 	}
+}
+
+type StaleSeries struct {
+	Series string        `json:"series"`
+	Last   time.Time     `json:"last"`
+	Age    time.Duration `json:"age"`
+}
+
+func (e *Engine) Stale(maxAge time.Duration) []StaleSeries {
+	if maxAge <= 0 || len(e.lastSeen) == 0 {
+		return nil
+	}
+	asOf := e.watermark
+	for _, last := range e.lastSeen {
+		if last.After(asOf) {
+			asOf = last
+		}
+	}
+	var out []StaleSeries
+	for key, last := range e.lastSeen {
+		age := asOf.Sub(last)
+		if age > maxAge {
+			out = append(out, StaleSeries{Series: key, Last: last, Age: age})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Age > out[j].Age })
+	return out
 }
 
 func (e *Engine) evictSeries() {
@@ -763,6 +799,7 @@ func (e *Engine) dropSeries(key string) {
 	delete(e.slotModels, key)
 	delete(e.geo, key)
 	delete(e.seriesScores, key)
+	delete(e.lastSeen, key)
 	e.Evicted++
 }
 
