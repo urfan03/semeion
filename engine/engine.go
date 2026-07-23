@@ -301,7 +301,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		e.touchSeries(mk)
 		var prob, score, typical float64
 		var dir core.Direction
-		var lower, upper float64
+		var lower, upper, mbImpact float64
 		kind := "metric"
 		switch {
 		case d.Distribution:
@@ -327,6 +327,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 				kind = "multi_bucket"
 			}
 			lower, upper = mdl.Bounds(boundsZ)
+			mbImpact = mdl.MultiBucketImpact()
 		}
 		admit := score >= e.threshold
 		if admit && e.job.Sensitivity > 0 {
@@ -336,7 +337,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
 				Actual: val, Typical: typical, Lower: lower, Upper: upper, Probability: prob,
-				Score: score, Direction: dir, Kind: kind,
+				Score: score, Direction: dir, Kind: kind, MultiBucketImpact: mbImpact,
 				Influencers: e.influencers(d, sp),
 			})
 		}

@@ -27,6 +27,8 @@ type Model struct {
 
 	lastTypical float64
 	lastScale   float64
+	lastSingle  float64
+	lastMB      float64
 
 	driftRun  int
 	driftSign int
@@ -230,6 +232,7 @@ func (m *Model) Observe(value float64) (prob, score, typical float64, dir core.D
 	prob, score, typical, z, dir = m.evaluate(value)
 
 	m.lastMulti = false
+	m.lastSingle, m.lastMB = score, score
 	if m.mbWindow > 1 && len(m.history) >= m.warmup {
 		m.recent = append(m.recent, z)
 		if len(m.recent) > m.mbWindow {
@@ -242,7 +245,9 @@ func (m *Model) Observe(value float64) (prob, score, typical float64, dir core.D
 			if m.side == jobspec.SideBoth {
 				mbProb = math.Min(1, 2*mbProb)
 			}
-			if mbScore := scoreFromProbability(mbProb); mbScore > score {
+			mbScore := scoreFromProbability(mbProb)
+			m.lastMB = mbScore
+			if mbScore > score {
 				prob, score, m.lastMulti = mbProb, mbScore, true
 			}
 		}
@@ -280,6 +285,17 @@ func (m *Model) trackDrift(z float64) {
 }
 
 func (m *Model) LastMulti() bool { return m.lastMulti }
+
+func (m *Model) MultiBucketImpact() float64 {
+	if m.lastMB <= m.lastSingle || m.lastMB <= 0 {
+		return 0
+	}
+	impact := 5 * (m.lastMB - m.lastSingle) / m.lastMB
+	if impact > 5 {
+		return 5
+	}
+	return impact
+}
 
 func (m *Model) Count() int { return len(m.history) }
 

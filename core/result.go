@@ -37,6 +37,10 @@ type Record struct {
 	MatchCount int      `json:"match_count,omitempty"`
 
 	Interim bool `json:"is_interim,omitempty"`
+	// MultiBucketImpact (0..5) is how much a sustained multi-bucket deviation
+	// drove this anomaly beyond the single-bucket score (Elastic ML's
+	// multi_bucket_impact). 0 when the anomaly is purely single-bucket.
+	MultiBucketImpact float64 `json:"multi_bucket_impact,omitempty"`
 
 	Influencers []Influencer `json:"influencers,omitempty"`
 }
