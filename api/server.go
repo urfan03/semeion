@@ -25,6 +25,7 @@ import (
 	"github.com/urfan03/semeion/jobspec"
 	"github.com/urfan03/semeion/model"
 	"github.com/urfan03/semeion/outlier"
+	"github.com/urfan03/semeion/stats"
 	"github.com/urfan03/semeion/topology"
 )
 
@@ -130,6 +131,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/analyze", s.handleAnalyze)
 	mux.HandleFunc("/v1/autopilot", s.handleAutopilot)
 	mux.HandleFunc("/v1/forecast", s.handleForecast)
+	mux.HandleFunc("/v1/changepoints", s.handleChangePoints)
+	mux.HandleFunc("/v1/leadlag", s.handleLeadLag)
 	mux.HandleFunc("/v1/outliers", s.handleOutliers)
 	mux.HandleFunc("/v1/incidents", s.handleIncidents)
 	mux.HandleFunc("/v1/incidents/", s.handleIncidents)
@@ -313,6 +316,75 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 		resp["breach"] = model.ForecastBreach(bands, *req.Threshold, req.Side != "low")
 	}
 	writeJSON(w, resp)
+}
+
+// handleChangePoints returns the mean-shift change points of a series, the
+// stable regimes between them, and the probability that the most recent regime
+// is a genuine shift (the baseline moved) rather than a transient.
+func (s *Server) handleChangePoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req struct {
+		Series []float64 `json:"series"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{
+		"change_points": s.provider.ChangePoints(req.Series),
+		"regimes":       model.Regimes(req.Series),
+		"shift":         model.RegimeShift(req.Series),
+	})
+}
+
+// handleLeadLag runs the causality primitives. With `candidates` it ranks each
+// candidate series by how strongly it leads the `target` series (RCA ordering —
+// what moved first); with a bare `a`/`b` pair it returns the pairwise lead-lag
+// and Granger result.
+func (s *Server) handleLeadLag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req struct {
+		Target     []float64            `json:"target"`
+		Candidates map[string][]float64 `json:"candidates"`
+		A          []float64            `json:"a"`
+		B          []float64            `json:"b"`
+		MaxLag     int                  `json:"max_lag"`
+		Order      int                  `json:"order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if req.MaxLag <= 0 {
+		req.MaxLag = 10
+	}
+	if req.Order <= 0 {
+		req.Order = 3
+	}
+	if len(req.Candidates) > 0 {
+		writeJSON(w, map[string]any{
+			"ranking": correlate.OrderByCausality(req.Target, req.Candidates, req.MaxLag, req.Order),
+		})
+		return
+	}
+	lag, corr := stats.LeadLag(req.A, req.B, req.MaxLag)
+	improve, fStat := stats.Granger(req.A, req.B, req.Order)
+	leads := "none"
+	if lag > 0 {
+		leads = "a"
+	} else if lag < 0 {
+		leads = "b"
+	}
+	writeJSON(w, map[string]any{
+		"lag": lag, "corr": corr, "leads": leads,
+		"granger_improvement": improve, "granger_f": fStat,
+	})
 }
 
 // handleJobs lists every job the server knows about — analysed batches and
