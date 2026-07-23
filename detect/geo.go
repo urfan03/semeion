@@ -54,6 +54,14 @@ func (m *GeoModel) DistanceKm(lat, lon float64) (float64, bool) {
 	return haversineKm(lat, lon, clat, clon), true
 }
 
+func (m *GeoModel) Bounds(z float64) (lower, upper float64) {
+	lo, up := m.dist.Bounds(z)
+	if lo < 0 {
+		lo = 0
+	}
+	return lo, up
+}
+
 func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371.0088
 	p1, p2 := rad(lat1), rad(lat2)

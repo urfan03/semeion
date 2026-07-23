@@ -1,12 +1,41 @@
 package engine
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/urfan03/semeion/core"
 	"github.com/urfan03/semeion/jobspec"
 )
+
+func TestRenormalizePerSeriesDoesNotCrushQuietSeries(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := func(sev float64) float64 { return math.Pow(10, -sev) }
+	results := []core.BucketResult{
+		{Time: t0, Records: []core.Record{
+			{Time: t0, Detector: "mean(v)", Series: "host=big", Probability: p(40)},
+			{Time: t0, Detector: "mean(v)", Series: "host=small", Probability: p(4)},
+		}},
+	}
+	RenormalizeResults(results)
+
+	var big, small float64
+	for _, r := range results[0].Records {
+		switch r.Series {
+		case "host=big":
+			big = r.Score
+		case "host=small":
+			small = r.Score
+		}
+	}
+	if big < 99 {
+		t.Fatalf("the extreme series should renormalize to ~100, got %.1f", big)
+	}
+	if small < 25 {
+		t.Fatalf("a quiet series' anomaly must not be crushed by an unrelated extreme series: got %.1f", small)
+	}
+}
 
 func TestRenormalizeDoesNotFavorProbabilityLessRecords(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

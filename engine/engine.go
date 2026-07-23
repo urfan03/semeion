@@ -311,6 +311,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 				e.distrib[mk] = dm
 			}
 			prob, score, typical, dir = dm.Observe(val)
+			lower, upper = dm.Bounds(boundsZ)
 		case d.Seasonal:
 			sm := e.seasonal[mk]
 			if sm == nil {
@@ -384,6 +385,7 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 	type ev struct {
 		entity              string
 		val, prob, score, t float64
+		lower, upper        float64
 		dir                 core.Direction
 	}
 	ents := make([]string, 0, len(byEntity))
@@ -399,7 +401,8 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 			continue
 		}
 		prob, score, typical, dir := m.Score(val)
-		evs = append(evs, ev{ent, val, prob, score, typical, dir})
+		lower, upper := m.Bounds(boundsZ)
+		evs = append(evs, ev{ent, val, prob, score, typical, lower, upper, dir})
 	}
 	for _, x := range evs {
 		m.Learn(x.val)
@@ -408,7 +411,7 @@ func (e *Engine) scorePopulation(br *core.BucketResult, d jobspec.Detector, bt t
 		if x.score >= e.threshold {
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: x.entity,
-				Actual: x.val, Typical: x.t, Probability: x.prob,
+				Actual: x.val, Typical: x.t, Lower: x.lower, Upper: x.upper, Probability: x.prob,
 				Score: x.score, Direction: x.dir, Kind: "population",
 				Influencers: []core.Influencer{{Field: d.OverField, Value: x.entity}},
 			})
@@ -447,11 +450,25 @@ func (e *Engine) scoreMultivariate(br *core.BucketResult, d jobspec.Detector, bt
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
 				Actual: dist, Typical: math.Sqrt(float64(len(d.Fields))),
+				Lower: 0, Upper: chiRadius95(len(d.Fields)),
 				Probability: prob, Score: score, Direction: core.DirUp, Kind: "multivariate",
 				Influencers: multivarInfluencers(d.Fields, contrib),
 			})
 		}
 	}
+}
+
+func chiRadius95(k int) float64 {
+	if k <= 0 {
+		return 0
+	}
+	const z = 1.645
+	t := 2.0 / (9.0 * float64(k))
+	q := float64(k) * math.Pow(1-t+z*math.Sqrt(t), 3)
+	if q < 0 {
+		return 0
+	}
+	return math.Sqrt(q)
 }
 
 func meanValues(pts []core.DataPoint, field string) (float64, bool) {
@@ -524,9 +541,10 @@ func (e *Engine) scoreGeo(br *core.BucketResult, d jobspec.Detector, bt time.Tim
 		actualKm, _ := gm.DistanceKm(lat, lon)
 		prob, score, typicalKm, dir := gm.Observe(lat, lon)
 		if score >= e.threshold {
+			lower, upper := gm.Bounds(boundsZ)
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
-				Actual: actualKm, Typical: typicalKm, Probability: prob,
+				Actual: actualKm, Typical: typicalKm, Lower: lower, Upper: upper, Probability: prob,
 				Score: score, Direction: dir, Kind: "lat_long",
 				Influencers: e.influencers(d, sp),
 			})
@@ -873,17 +891,23 @@ func RenormalizeResults(results []core.BucketResult) {
 	const fullScale = 12.0
 	sevOf := func(p float64) float64 {
 		if p <= 0 {
-
 			return fullScale
 		}
 		return -math.Log10(p)
 	}
-	anchor := fullScale
+	key := func(r core.Record) string { return r.Detector + "\x00" + r.Series }
+	anchor := map[string]float64{}
 	for i := range results {
 		for _, r := range results[i].Records {
-			if s := sevOf(r.Probability); s > anchor {
-				anchor = s
+			k := key(r)
+			cur, ok := anchor[k]
+			if !ok {
+				cur = fullScale
 			}
+			if s := sevOf(r.Probability); s > cur {
+				cur = s
+			}
+			anchor[k] = cur
 		}
 	}
 	for i := range results {
@@ -891,7 +915,11 @@ func RenormalizeResults(results []core.BucketResult) {
 		br.Score = 0
 		for j := range br.Records {
 			r := &br.Records[j]
-			sc := sevOf(r.Probability) / anchor * 100
+			a := anchor[key(*r)]
+			if a < fullScale {
+				a = fullScale
+			}
+			sc := sevOf(r.Probability) / a * 100
 			if sc > 100 {
 				sc = 100
 			}

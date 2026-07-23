@@ -65,3 +65,16 @@ func (m *DistributionModel) push(v float64) {
 }
 
 func (m *DistributionModel) Family() string { return m.dist.Family }
+
+func (m *DistributionModel) Bounds(z float64) (lower, upper float64) {
+	if len(m.history) == 0 {
+		return 0, 0
+	}
+	med, mad := stats.MAD(m.history)
+	scale := 1.4826 * mad
+	if scale <= 0 {
+		_, std := stats.MeanStd(m.history)
+		scale = std
+	}
+	return med - z*scale, med + z*scale
+}
