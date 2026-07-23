@@ -22,6 +22,7 @@ import (
 	"github.com/urfan03/semeion/model"
 	"github.com/urfan03/semeion/outlier"
 	"github.com/urfan03/semeion/stats"
+	"github.com/urfan03/semeion/store"
 	"github.com/urfan03/semeion/topology"
 )
 
@@ -51,6 +52,15 @@ type Server struct {
 
 	authToken string
 	limiter   *rateLimiter
+
+	history *store.ResultLog
+}
+
+func (s *Server) WithHistory(dir string) *Server {
+	if dir != "" {
+		s.history = store.NewResultLog(dir)
+	}
+	return s
 }
 
 func (s *Server) WithAuthToken(token string) *Server {
@@ -117,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/jobs/", s.handleLiveJobs)
 	mux.HandleFunc("/v1/results/", s.handleResults)
 	mux.HandleFunc("/v1/influencers/", s.handleInfluencers)
+	mux.HandleFunc("/v1/history/", s.handleHistory)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
 
 	mux.HandleFunc("/grafana/search", s.handleGrafanaSearch)
@@ -404,6 +415,32 @@ func (s *Server) handleInfluencers(w http.ResponseWriter, r *http.Request) {
 		"job":         job,
 		"influencers": correlate.RankInfluencers(res, r.URL.Query().Get("field")),
 	})
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		httpError(w, http.StatusNotImplemented, "durable history is not enabled (serve --history DIR)")
+		return
+	}
+	job := strings.TrimPrefix(r.URL.Path, "/v1/history/")
+	q := r.URL.Query()
+	var from, to time.Time
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			from = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			to = t
+		}
+	}
+	recs, err := s.history.Query(job, from, to)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"job": job, "records": recs})
 }
 
 func (s *Server) handleGrafana(w http.ResponseWriter, r *http.Request) {

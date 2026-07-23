@@ -175,7 +175,12 @@ func (s *Server) publish(ctx context.Context, lj *liveJob, closed []core.BucketR
 	}
 	s.results[lj.Name] = res
 	n := s.notifier
+	hist := s.history
 	s.mu.Unlock()
+
+	if hist != nil {
+		_ = hist.Append(lj.Name, kept)
+	}
 
 	if n != nil {
 		sent, err := n.Notify(ctx, lj.Name, kept)
