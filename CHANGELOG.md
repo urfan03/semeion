@@ -39,6 +39,36 @@ tests; all 21 packages green.
 - **Memory-bound test**: under 6000-series cardinality with `MaxSeries=500`,
   resident models stay bounded and eviction fires (no table leaks).
 
+## [0.6.0]
+
+Elastic-ML parity + precision hardening, driven by an honest gap audit. Each item
+has a regression test; all packages green.
+
+### Precision / correctness
+- **Per-series score renormalization**: `RenormalizeResults` now anchors severity
+  per (detector, series) with the absolute full-scale floor kept, so one extreme
+  series no longer crushes every other partition's normalized score.
+- **Model-plot bounds for every detector kind**: distribution, population, geo
+  (`lat_long`) and multivariate records now carry `lower`/`upper` (previously
+  zero) — the multivariate band from a Wilson–Hilferty χ² radius.
+- **Rarity-scaled `rare`/`freq_rare` score**: the score reflects how rare the
+  value is across the window (−log₁₀ frequency) instead of a flat 70.
+
+### Elastic-ML parity
+- **Combined `over` + `by`/`partition`**: population analysis runs one pooled
+  baseline per by/partition split, so `mean(v) over user partition region` works.
+- **Delayed-data grace** (`Engine.Grace`, query-delay semantics): late points land
+  in their still-open bucket and are scored once, instead of being dropped;
+  `LateAccepted` counter added.
+- **`summary_count_field`**: `count` can sum a pre-aggregated per-row count field.
+- **`skip_model_update` rule action**: a matching bucket is still reported but not
+  learned, so a known outlier can't poison the baseline.
+- **Per-partition count zero-fill**: a `count by host` scores a silent host as a
+  real zero (drop-to-zero anomaly), per split value.
+- **Recurring calendars**: `Calendar` supports `recur_daily` / `recur_weekly`
+  (maintenance every Sunday), not just one-shot windows.
+- **Anomaly explanation**: records carry `multi_bucket_impact` (0..5).
+
 ## [0.4.0]
 
 Eight capability additions (each with a regression test; all 21 packages green).
