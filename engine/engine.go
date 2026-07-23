@@ -62,15 +62,16 @@ type Engine struct {
 	watermark time.Time
 	hasMark   bool
 
-	seriesLRU    map[string]int64
-	seriesScores map[string][]float64
-	lastSeen     map[string]time.Time
-	feedback     map[string]int
-	countSeries  map[string]map[string]bool
-	curBucket    time.Time
-	lruTick      int64
-	MaxSeries    int
-	Evicted      int64
+	seriesLRU        map[string]int64
+	seriesScores     map[string][]float64
+	lastSeen         map[string]time.Time
+	feedback         map[string]int
+	countSeries      map[string]map[string]bool
+	curBucket        time.Time
+	lruTick          int64
+	MaxSeries        int
+	ModelMemoryLimit int64
+	Evicted          int64
 
 	LateDropped  int64
 	LateAccepted int64
@@ -882,6 +883,35 @@ func (e *Engine) touchSeries(key string) {
 	}
 }
 
+func (e *Engine) EstimateModelBytes() int64 {
+	const perFloat = 8
+	var b int64
+	for _, m := range e.models {
+		b += int64(m.Count())*perFloat + 320
+	}
+	b += int64(len(e.seasonal)) * (6000*perFloat + 512)
+	b += int64(len(e.distrib)) * (1024*perFloat + 256)
+	b += int64(len(e.multivar)) * 4096
+	b += int64(len(e.slotModels)) * (512*perFloat + 128)
+	b += int64(len(e.geo)) * 512
+	return b
+}
+
+func (e *Engine) MemoryStatus() (bytes int64, status string) {
+	bytes = e.EstimateModelBytes()
+	if e.ModelMemoryLimit <= 0 {
+		return bytes, "ok"
+	}
+	switch {
+	case bytes >= e.ModelMemoryLimit:
+		return bytes, "hard_limit"
+	case float64(bytes) >= 0.85*float64(e.ModelMemoryLimit):
+		return bytes, "soft_limit"
+	default:
+		return bytes, "ok"
+	}
+}
+
 type StaleSeries struct {
 	Series string        `json:"series"`
 	Last   time.Time     `json:"last"`
@@ -1017,9 +1047,15 @@ func RenormalizeResults(results []core.BucketResult) {
 	}
 	for i := range results {
 		br := &results[i]
+		if br.InitialScore == 0 {
+			br.InitialScore = br.Score
+		}
 		br.Score = 0
 		for j := range br.Records {
 			r := &br.Records[j]
+			if r.InitialScore == 0 {
+				r.InitialScore = r.Score
+			}
 			a := anchor[key(*r)]
 			if a < fullScale {
 				a = fullScale

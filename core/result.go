@@ -26,7 +26,10 @@ type Record struct {
 	Upper       float64   `json:"upper,omitempty"`
 	Probability float64   `json:"probability"`
 	Score       float64   `json:"score"`
-	Direction   Direction `json:"direction"`
+	// InitialScore is the score at the time the bucket was first analysed, before
+	// any later renormalization rescaled it (Elastic ML's initial_record_score).
+	InitialScore float64   `json:"initial_score,omitempty"`
+	Direction    Direction `json:"direction"`
 
 	Kind     string `json:"kind,omitempty"`
 	Template string `json:"template,omitempty"`
@@ -46,7 +49,8 @@ type Record struct {
 }
 
 type BucketResult struct {
-	Time    time.Time `json:"time"`
-	Score   float64   `json:"score"`
-	Records []Record  `json:"records,omitempty"`
+	Time         time.Time `json:"time"`
+	Score        float64   `json:"score"`
+	InitialScore float64   `json:"initial_score,omitempty"`
+	Records      []Record  `json:"records,omitempty"`
 }

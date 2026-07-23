@@ -529,6 +529,9 @@ func jobStatus(lj *liveJob) map[string]any {
 	if !lj.Logs {
 		st["bucket_span"] = lj.Spec.BucketSpan.String()
 		st["detectors"] = lj.Spec.Detectors
+		bytes, status := lj.eng.MemoryStatus()
+		st["model_bytes"] = bytes
+		st["model_memory_status"] = status
 	}
 	return st
 }
