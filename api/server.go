@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/jobs", s.handleLiveJobs)
 	mux.HandleFunc("/v1/jobs/", s.handleLiveJobs)
 	mux.HandleFunc("/v1/results/", s.handleResults)
+	mux.HandleFunc("/v1/influencers/", s.handleInfluencers)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
 	// OTLP/HTTP paths, so an OpenTelemetry Collector can point `otlphttp` at
 	// this server directly (endpoint: http://semeion:8080/v1/otlp).
@@ -438,6 +439,25 @@ func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"job": job, "results": res})
+}
+
+// handleInfluencers rolls a job's results up into a ranked list of the entities
+// (host/user/service/…) that carried the most anomalous mass — the "who is
+// responsible" view over the whole window. Optional ?field=host filters to one
+// dimension.
+func (s *Server) handleInfluencers(w http.ResponseWriter, r *http.Request) {
+	job := strings.TrimPrefix(r.URL.Path, "/v1/influencers/")
+	s.mu.RLock()
+	res, ok := s.results[job]
+	s.mu.RUnlock()
+	if !ok {
+		httpError(w, http.StatusNotFound, "no results for job "+job)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"job":         job,
+		"influencers": correlate.RankInfluencers(res, r.URL.Query().Get("field")),
+	})
 }
 
 // handleGrafana returns a flat time/score series for /v1/grafana/{job} — the
