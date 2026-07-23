@@ -145,7 +145,20 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 			e.scoreTemporal(&br, d, bt, pts)
 		}
 	}
+	sortRecords(br.Records)
 	return br
+}
+
+func sortRecords(recs []core.Record) {
+	sort.SliceStable(recs, func(i, j int) bool {
+		if recs[i].Detector != recs[j].Detector {
+			return recs[i].Detector < recs[j].Detector
+		}
+		if recs[i].Series != recs[j].Series {
+			return recs[i].Series < recs[j].Series
+		}
+		return recs[i].Kind < recs[j].Kind
+	})
 }
 
 func (e *Engine) Interim() []core.BucketResult {
@@ -471,7 +484,12 @@ func multivarInfluencers(fields []string, contrib []float64) []core.Influencer {
 		}
 		arr = append(arr, fc{f, c})
 	}
-	sort.Slice(arr, func(i, j int) bool { return arr[i].c > arr[j].c })
+	sort.SliceStable(arr, func(i, j int) bool {
+		if arr[i].c != arr[j].c {
+			return arr[i].c > arr[j].c
+		}
+		return arr[i].f < arr[j].f
+	})
 	var out []core.Influencer
 	for _, x := range arr {
 		if x.c < 0.1 {
@@ -834,7 +852,7 @@ func dominant(pts []core.DataPoint, field string) (string, float64) {
 	}
 	best, bestN := "", 0
 	for v, n := range counts {
-		if n > bestN {
+		if n > bestN || (n == bestN && v < best) {
 			best, bestN = v, n
 		}
 	}

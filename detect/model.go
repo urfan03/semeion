@@ -291,22 +291,26 @@ func (m *Model) push(v float64) {
 }
 
 type ModelState struct {
-	Side     jobspec.Side `json:"side"`
-	Window   int          `json:"window"`
-	Warmup   int          `json:"warmup"`
-	History  []float64    `json:"history"`
-	MBWindow int          `json:"mb_window,omitempty"`
-	Recent   []float64    `json:"recent,omitempty"`
+	Side      jobspec.Side `json:"side"`
+	Window    int          `json:"window"`
+	Warmup    int          `json:"warmup"`
+	History   []float64    `json:"history"`
+	MBWindow  int          `json:"mb_window,omitempty"`
+	Recent    []float64    `json:"recent,omitempty"`
+	DriftRun  int          `json:"drift_run,omitempty"`
+	DriftSign int          `json:"drift_sign,omitempty"`
 }
 
 func (m *Model) State() ModelState {
 	return ModelState{
-		Side:     m.side,
-		Window:   m.window,
-		Warmup:   m.warmup,
-		History:  append([]float64(nil), m.history...),
-		MBWindow: m.mbWindow,
-		Recent:   append([]float64(nil), m.recent...),
+		Side:      m.side,
+		Window:    m.window,
+		Warmup:    m.warmup,
+		History:   append([]float64(nil), m.history...),
+		MBWindow:  m.mbWindow,
+		Recent:    append([]float64(nil), m.recent...),
+		DriftRun:  m.driftRun,
+		DriftSign: m.driftSign,
 	}
 }
 
@@ -321,11 +325,13 @@ func ModelFromState(s ModelState) *Model {
 		s.MBWindow = defaultMBWindow
 	}
 	return &Model{
-		side:     s.Side,
-		window:   s.Window,
-		warmup:   s.Warmup,
-		history:  append([]float64(nil), s.History...),
-		mbWindow: s.MBWindow,
-		recent:   append([]float64(nil), s.Recent...),
+		side:      s.Side,
+		window:    s.Window,
+		warmup:    s.Warmup,
+		history:   append([]float64(nil), s.History...),
+		mbWindow:  s.MBWindow,
+		recent:    append([]float64(nil), s.Recent...),
+		driftRun:  s.DriftRun,
+		driftSign: s.DriftSign,
 	}
 }
