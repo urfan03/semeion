@@ -15,6 +15,7 @@ import (
 
 	"github.com/urfan03/semeion/alert"
 	"github.com/urfan03/semeion/autopilot"
+	"github.com/urfan03/semeion/catalog"
 	"github.com/urfan03/semeion/core"
 	"github.com/urfan03/semeion/correlate"
 	"github.com/urfan03/semeion/engine"
@@ -128,6 +129,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/results/", s.handleResults)
 	mux.HandleFunc("/v1/influencers/", s.handleInfluencers)
 	mux.HandleFunc("/v1/history/", s.handleHistory)
+	mux.HandleFunc("/v1/catalog", s.handleCatalog)
+	mux.HandleFunc("/v1/catalog/", s.handleCatalog)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
 
 	mux.HandleFunc("/grafana/search", s.handleGrafanaSearch)
@@ -415,6 +418,32 @@ func (s *Server) handleInfluencers(w http.ResponseWriter, r *http.Request) {
 		"job":         job,
 		"influencers": correlate.RankInfluencers(res, r.URL.Query().Get("field")),
 	})
+}
+
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/v1/catalog")
+	name = strings.Trim(name, "/")
+	if name == "" {
+		list := catalog.List()
+		out := make([]map[string]string, 0, len(list))
+		for _, t := range list {
+			out = append(out, map[string]string{"name": t.Name, "description": t.Description})
+		}
+		writeJSON(w, map[string]any{"templates": out})
+		return
+	}
+	span := time.Minute
+	if v := r.URL.Query().Get("span"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			span = d
+		}
+	}
+	job, ok := catalog.Get(name, span)
+	if !ok {
+		httpError(w, http.StatusNotFound, "no catalog template "+name)
+		return
+	}
+	writeJSON(w, job)
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
