@@ -24,8 +24,12 @@ const (
 	FuncMedian        Function = "median"
 	FuncDistinctCount Function = "distinct_count" // cardinality of field's values in the bucket
 	FuncNonZeroCount  Function = "non_zero_count" // count of non-zero field values
+	FuncNonNullSum    Function = "non_null_sum"   // sum of the field's present (non-null) values
 	FuncVarp          Function = "varp"           // population variance of the field
+	FuncMetric        Function = "metric"         // metric summary (scored on the mean)
+	FuncRate          Function = "rate"           // per-second rate: sum(field)/sec, or count/sec
 	FuncRare          Function = "rare"           // rare values of by_field (over time)
+	FuncFreqRare      Function = "freq_rare"      // rare values weighted by frequency (routed to rare)
 	FuncInfoContent   Function = "info_content"   // entropy of by_field's value distribution
 	FuncTimeOfDay     Function = "time_of_day"    // events at an unusual hour-of-day
 	FuncTimeOfWeek    Function = "time_of_week"   // events at an unusual hour-of-week
@@ -92,6 +96,12 @@ type Job struct {
 	Detectors   []Detector    `json:"detectors"             yaml:"detectors"`
 	Influencers []string      `json:"influencers,omitempty" yaml:"influencers,omitempty"`
 	Calendars   []Calendar    `json:"calendars,omitempty"   yaml:"calendars,omitempty"`
+	// Sensitivity (0..1) enables per-series adaptive gating: a metric record is
+	// reported only if its score also exceeds this quantile of the series' own
+	// recent scores. A chronically noisy series must clear its own high-water
+	// mark (fewer false positives); a quiet series still alerts on a modest bump.
+	// 0 (default) disables it — the fixed threshold alone applies.
+	Sensitivity float64 `json:"sensitivity,omitempty" yaml:"sensitivity,omitempty"`
 }
 
 // NeedsField reports whether the function operates on a metric field. Only the
@@ -102,7 +112,8 @@ func (d Detector) NeedsField() bool {
 		return false // uses Fields (a metric vector), not a single Field
 	}
 	switch d.Function {
-	case FuncMean, FuncSum, FuncMin, FuncMax, FuncMedian, FuncDistinctCount, FuncNonZeroCount, FuncVarp:
+	case FuncMean, FuncSum, FuncMin, FuncMax, FuncMedian, FuncDistinctCount, FuncNonZeroCount,
+		FuncNonNullSum, FuncVarp, FuncMetric:
 		return true
 	}
 	return false
@@ -110,6 +121,27 @@ func (d Detector) NeedsField() bool {
 
 // IsPopulation reports whether this is a population (over_field) analysis.
 func (d Detector) IsPopulation() bool { return d.OverField != "" }
+
+// CountsEmptyAsZero reports whether an empty (missing) bucket is a meaningful
+// zero for this detector — a count-family metric where "no events" is itself the
+// signal (a traffic drop to zero) — rather than a data gap. Only single-series
+// detectors (no by/partition/over split, not multivariate) qualify: an empty
+// bucket carries no field values, so there is no way to know WHICH by-series
+// went silent. Metric functions (mean/sum/min/max/median/…) treat an empty
+// bucket as no-data and are not scored on it. This drives gap-filling: the engine
+// synthesises the missing buckets so a drop to zero is caught.
+func (d Detector) CountsEmptyAsZero() bool {
+	if d.ByField != "" || d.PartitionField != "" || d.OverField != "" || d.IsMultivariate() {
+		return false
+	}
+	switch d.Function {
+	case FuncCount, FuncNonZeroCount, FuncDistinctCount:
+		return true
+	case FuncRate:
+		return d.Field == "" // count-rate → 0/s; a field-rate over an empty bucket is a gap
+	}
+	return false
+}
 
 // EffectiveSide resolves the default (both) when unset.
 func (d Detector) EffectiveSide() Side {
@@ -128,8 +160,8 @@ func (d Detector) ID() string {
 	switch {
 	case d.IsMultivariate():
 		return fmt.Sprintf("multivariate(%s)", strings.Join(d.Fields, ","))
-	case d.Function == FuncRare:
-		return fmt.Sprintf("rare(%s)", d.ByField)
+	case d.Function == FuncRare || d.Function == FuncFreqRare:
+		return fmt.Sprintf("%s(%s)", d.Function, d.ByField)
 	case d.Function == FuncInfoContent:
 		return fmt.Sprintf("info_content(%s)", d.ByField)
 	case d.Function == FuncTimeOfDay || d.Function == FuncTimeOfWeek:
@@ -163,8 +195,8 @@ func (j *Job) Validate() error {
 		if d.NeedsField() && d.Field == "" {
 			return fmt.Errorf("job %q: detector %d (%s): field is required", j.Name, i, d.Function)
 		}
-		if d.Function == FuncRare && d.ByField == "" {
-			return fmt.Errorf("job %q: detector %d (rare): by_field is required", j.Name, i)
+		if (d.Function == FuncRare || d.Function == FuncFreqRare) && d.ByField == "" {
+			return fmt.Errorf("job %q: detector %d (%s): by_field is required", j.Name, i, d.Function)
 		}
 		if d.Function == FuncInfoContent && d.ByField == "" {
 			return fmt.Errorf("job %q: detector %d (info_content): by_field is required", j.Name, i)

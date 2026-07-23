@@ -62,8 +62,45 @@ writes; and a corrupt state file no longer blocks startup.
 `distinct_count`, `non_zero_count`, `varp`; **forecast prediction intervals**
 (95% bands, `/v1/forecast` + `forecast` CLI); per-influencer **influence score**
 (share of the anomalous mass, not just a mode label). Deeper research-scale items
-(Prelert-grade Bayesian multi-seasonality, categorization examples, lat_long, and
-the supervised DFA/NLP families) remain out of scope by design.
+(Prelert-grade Bayesian multi-seasonality, lat_long, and the supervised DFA/NLP
+families) remain out of scope by design.
+
+### Precision & functionality (post-audit, each with a regression test)
+
+Ten enhancements that make the engine more precise and more capable:
+
+- **Trend-aware baseline** — a series with a genuine, sustained trend (both
+  window-halves agreeing) is scored against its fitted OLS line + residual MAD,
+  so steady organic growth no longer reads as a perpetual high anomaly; a level
+  *step* still fails the both-halves test and is caught.
+- **Per-bucket typical bounds** — every metric record carries `lower`/`upper`
+  (the ~95% model band), so a result shows not just the score but the range the
+  value was expected to fall in.
+- **Warm-up confidence ramp** — scores ramp in over the first buckets past
+  warm-up instead of switching on hard, damping cold-start false positives.
+- **Concept-drift rebase** — a long, sustained one-directional shift (a new
+  normal) trims stale history so the baseline re-centres instead of alerting
+  forever on the old level.
+- **Adaptive per-series sensitivity** — an optional `sensitivity` (0..1) gates a
+  record on its own series' recent score quantile: a chronically noisy series
+  must clear its own high-water mark, a quiet one still alerts on a modest bump.
+- **New detector functions** — `rate` (per-second event/field rate),
+  `non_null_sum`, `metric` (mean summary), and `freq_rare` (rare weighted by
+  in-bucket frequency).
+- **Gap / missing-bucket handling** — for count-family detectors a missing
+  bucket is scored as a real zero (a drop to no-traffic is caught), while metric
+  detectors treat a gap as no-data; works in both batch and streaming, bounded
+  against sparse-series blow-up.
+- **Predictive breach alerting** — `ForecastBreach` projects the forecast bands
+  against a threshold/SLO and reports whether and *when* the value will cross it,
+  with a probability from the band (exposed via `/v1/forecast` with a
+  `threshold`).
+- **Interim results** — `Engine.Interim()` (and `GET /v1/jobs/{name}/interim`)
+  scores the still-open bucket provisionally (`is_interim`) without closing it or
+  disturbing the baseline, for mid-bucket alerting.
+- **Categorization depth** — each log category keeps several distinct example
+  messages and a cumulative match count, exposed as a category catalogue
+  (`Categories()` / `GET /v1/jobs/{name}/categories`).
 
 ### Engine (A0–A6)
 

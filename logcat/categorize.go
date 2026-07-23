@@ -12,11 +12,12 @@ import (
 
 // Tuning (conservative, to keep false positives low).
 const (
-	catWarmup  = 20 // buckets before scoring begins
-	catMinNew  = 3  // a new template must occur >= this in its first bucket to fire
-	catRareMax = 2  // a template seen in <= this many buckets total is "rare"
-	scoreNew   = 90 // fixed score for a brand-new template
-	scoreRare  = 65 // fixed score for a rare template
+	catWarmup      = 20 // buckets before scoring begins
+	catMinNew      = 3  // a new template must occur >= this in its first bucket to fire
+	catRareMax     = 2  // a template seen in <= this many buckets total is "rare"
+	scoreNew       = 90 // fixed score for a brand-new template
+	scoreRare      = 65 // fixed score for a rare template
+	catMaxExamples = 4  // distinct example messages kept per category (Elastic ML keeps ~4)
 )
 
 // Categorizer detects log anomalies: NEW templates ("an error type never seen
@@ -33,7 +34,9 @@ type Categorizer struct {
 	models   map[int]*detect.Model // per-template spike model (keyed by cluster ID)
 	firstBkt map[int]time.Time     // first bucket a template appeared in
 	buckets  map[int]int           // distinct buckets a template appeared in (rarity)
-	sample   map[int]string        // an example message per template
+	sample   map[int]string        // the representative (first) example message per template
+	examples map[int][]string      // up to catMaxExamples distinct example messages per template
+	matches  map[int]int           // cumulative lines matched per template (num_matches)
 	suppress map[int]bool          // feedback: templates the operator muted
 	seen     int                   // buckets processed
 
@@ -50,6 +53,8 @@ func NewCategorizer(span time.Duration) *Categorizer {
 		firstBkt: make(map[int]time.Time),
 		buckets:  make(map[int]int),
 		sample:   make(map[int]string),
+		examples: make(map[int][]string),
+		matches:  make(map[int]int),
 		suppress: make(map[int]bool),
 		pending:  make(map[time.Time][]core.LogLine),
 	}
@@ -145,9 +150,11 @@ func (c *Categorizer) scoreBucket(bt time.Time, lines []core.LogLine, threshold 
 		}
 		counts[cl.ID]++
 		cluster[cl.ID] = cl
+		c.matches[cl.ID]++
 		if _, ok := c.sample[cl.ID]; !ok {
 			c.sample[cl.ID] = l.Message
 		}
+		c.addExample(cl.ID, l.Message)
 		if c.influencer != "" {
 			if v := l.Fields[c.influencer]; v != "" {
 				if infl[cl.ID] == nil {
@@ -190,6 +197,7 @@ func (c *Categorizer) scoreBucket(bt time.Time, lines []core.LogLine, threshold 
 			Time: bt, Detector: "categorization", Series: fmt.Sprintf("T%d", id),
 			Actual: float64(cnt), Direction: core.DirUp,
 			Template: cluster[id].Template(), Sample: c.sample[id],
+			CategoryID: id, Examples: append([]string(nil), c.examples[id]...), MatchCount: c.matches[id],
 			Influencers: []core.Influencer{{Field: "template", Value: cluster[id].Template()}},
 		}
 		if c.influencer != "" {
@@ -227,6 +235,63 @@ func topValue(m map[string]int) string {
 	return best
 }
 
+// addExample keeps up to catMaxExamples DISTINCT example messages for a category
+// (Elastic ML surfaces a handful of examples per category so an operator can see
+// the range of real messages behind a template, not just one).
+func (c *Categorizer) addExample(id int, msg string) {
+	ex := c.examples[id]
+	if len(ex) >= catMaxExamples {
+		return
+	}
+	for _, e := range ex {
+		if e == msg {
+			return // already have this exact example
+		}
+	}
+	c.examples[id] = append(ex, msg)
+}
+
+// CategoryDefinition describes one learned log category (Elastic ML's
+// category_definition): a stable id, the template, several example messages, and
+// how much traffic it has carried. Returned by Categories for inspection / a
+// category catalogue in the UI.
+type CategoryDefinition struct {
+	ID         int       `json:"id"`
+	Template   string    `json:"template"`
+	Examples   []string  `json:"examples,omitempty"`
+	NumMatches int       `json:"num_matches"`  // cumulative lines matched
+	Buckets    int       `json:"buckets_seen"` // distinct buckets it appeared in
+	FirstSeen  time.Time `json:"first_seen"`
+	Suppressed bool      `json:"suppressed,omitempty"`
+}
+
+// Categories returns every learned category with its definition, ordered by id.
+// It is a read-only view of the categorizer's template catalogue.
+func (c *Categorizer) Categories() []CategoryDefinition {
+	byID := make(map[int]*Cluster)
+	for _, cl := range c.drain.Clusters() {
+		byID[cl.ID] = cl
+	}
+	ids := make([]int, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	out := make([]CategoryDefinition, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, CategoryDefinition{
+			ID:         id,
+			Template:   byID[id].Template(),
+			Examples:   append([]string(nil), c.examples[id]...),
+			NumMatches: c.matches[id],
+			Buckets:    c.buckets[id],
+			FirstSeen:  c.firstBkt[id],
+			Suppressed: c.suppress[id],
+		})
+	}
+	return out
+}
+
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 // Snapshot is the serialisable state of a Categorizer (templates, per-template
@@ -244,6 +309,8 @@ type Snapshot struct {
 	FirstBkt   map[int]time.Time         `json:"first_bkt"`
 	Buckets    map[int]int               `json:"buckets"`
 	Sample     map[int]string            `json:"sample"`
+	Examples   map[int][]string          `json:"examples,omitempty"`
+	Matches    map[int]int               `json:"matches,omitempty"`
 	Suppress   map[int]bool              `json:"suppress"`
 }
 
@@ -261,6 +328,8 @@ func (c *Categorizer) Snapshot() Snapshot {
 		FirstBkt: copyTimeMap(c.firstBkt),
 		Buckets:  copyIntMap(c.buckets),
 		Sample:   copyStrMap(c.sample),
+		Examples: copyStrSliceMap(c.examples),
+		Matches:  copyIntMap(c.matches),
 		Suppress: copyBoolMap(c.suppress),
 	}
 }
@@ -287,6 +356,16 @@ func RestoreCategorizer(s Snapshot) *Categorizer {
 	c.firstBkt = copyTimeMap(s.FirstBkt)
 	c.buckets = copyIntMap(s.Buckets)
 	c.sample = copyStrMap(s.Sample)
+	c.examples = copyStrSliceMap(s.Examples)
+	c.matches = copyIntMap(s.Matches)
+	// Back-compat: an older snapshot has no examples map — seed each category's
+	// example ring from its representative sample so the catalogue isn't empty.
+	if len(c.examples) == 0 && len(c.sample) > 0 {
+		c.examples = make(map[int][]string, len(c.sample))
+		for id, msg := range c.sample {
+			c.examples[id] = []string{msg}
+		}
+	}
 	c.suppress = copyBoolMap(s.Suppress)
 	return c
 }
@@ -309,6 +388,13 @@ func copyStrMap(m map[int]string) map[int]string {
 	out := make(map[int]string, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+func copyStrSliceMap(m map[int][]string) map[int][]string {
+	out := make(map[int][]string, len(m))
+	for k, v := range m {
+		out[k] = append([]string(nil), v...)
 	}
 	return out
 }

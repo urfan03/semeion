@@ -22,6 +22,7 @@ import (
 	"github.com/urfan03/semeion/detect"
 	"github.com/urfan03/semeion/jobspec"
 	"github.com/urfan03/semeion/model"
+	"github.com/urfan03/semeion/stats"
 )
 
 const (
@@ -81,15 +82,30 @@ type Engine struct {
 	// permanent model per distinct value and grow without limit. seriesLRU stamps
 	// each series' last use; when the count exceeds MaxSeries the least-recently-
 	// used are evicted from every model map.
-	seriesLRU map[string]int64
-	lruTick   int64
-	MaxSeries int // 0 → defaultMaxSeries
-	Evicted   int64
+	seriesLRU    map[string]int64
+	seriesScores map[string][]float64 // recent scores per series, for adaptive sensitivity
+	lruTick      int64
+	MaxSeries    int // 0 → defaultMaxSeries
+	Evicted      int64
 
 	// LateDropped counts streaming points rejected because their bucket had
 	// already closed (out-of-order / delayed arrivals).
 	LateDropped int64
+
+	// GapsFilled counts synthesised empty buckets scored as zeros for count-family
+	// detectors (a traffic drop to zero shows up as a low anomaly). GapsSkipped
+	// counts gap-fill ranges too large to materialise (see maxGapFill) — reported
+	// so a bounded run never silently looks like full coverage.
+	GapsFilled  int64
+	GapsSkipped int64
 }
+
+// maxGapFill bounds how many missing buckets a single gap-fill will synthesise,
+// so a sparse series over a long horizon can't allocate unbounded buckets.
+const maxGapFill = 1_000_000
+
+// boundsZ is the z used for a record's typical range (model_lower/upper): ~95%.
+const boundsZ = 1.96
 
 // defaultMaxSeries caps the number of distinct per-series models an engine keeps
 // resident. At ~10 KB/model this is ~500 MB worst case — a backstop, not a
@@ -156,7 +172,7 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 		switch {
 		case d.IsMultivariate():
 			e.scoreMultivariate(&br, d, bt, pts)
-		case d.Function == jobspec.FuncRare:
+		case d.Function == jobspec.FuncRare || d.Function == jobspec.FuncFreqRare:
 			e.scoreRare(&br, d, bt, pts)
 		case d.Function == jobspec.FuncInfoContent:
 			e.scoreInfoContent(&br, d, bt, pts)
@@ -171,6 +187,98 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 	return br
 }
 
+// Interim scores the currently-open (pending) buckets provisionally — WITHOUT
+// closing them, learning from them, or mutating any engine state — and marks
+// each record is_interim. It lets a caller alert on the in-progress bucket
+// mid-span; the definitive record (which may change or disappear as the rest of
+// the bucket's data arrives) is emitted later when the bucket closes.
+//
+// Only the standard temporal detectors (count / value functions, per by-series)
+// produce interim results, and only against a baseline that has already warmed:
+// they peek via the model's non-mutating Score. Seasonal / distribution /
+// multivariate / rare / info_content / time_of_* detectors are evaluated only on
+// closed buckets (their scorers update learned state, so there is no safe peek).
+func (e *Engine) Interim() []core.BucketResult {
+	times := make([]time.Time, 0, len(e.pending))
+	for t := range e.pending {
+		times = append(times, t)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	out := make([]core.BucketResult, 0, len(times))
+	for _, bt := range times {
+		br := core.BucketResult{Time: bt}
+		if e.inCalendar(bt) {
+			out = append(out, br)
+			continue
+		}
+		for _, d := range e.job.Detectors {
+			if !interimEligible(d) {
+				continue
+			}
+			e.scoreTemporalPeek(&br, d, bt, e.pending[bt])
+		}
+		out = append(out, br)
+	}
+	return out
+}
+
+// interimEligible reports whether a detector supports provisional (open-bucket)
+// scoring — only the plain temporal Model path, which has a non-mutating peek.
+func interimEligible(d jobspec.Detector) bool {
+	if d.IsMultivariate() || d.IsPopulation() || d.Seasonal || d.Distribution {
+		return false
+	}
+	switch d.Function {
+	case jobspec.FuncRare, jobspec.FuncFreqRare, jobspec.FuncInfoContent,
+		jobspec.FuncTimeOfDay, jobspec.FuncTimeOfWeek:
+		return false
+	}
+	return true
+}
+
+// scoreTemporalPeek mirrors scoreTemporal but PEEKS: it scores against the
+// existing per-series baseline via Model.Score (no learning), never creates or
+// touches series bookkeeping, and marks each emitted record interim. A series
+// with no baseline yet is skipped (nothing to compare against).
+func (e *Engine) scoreTemporalPeek(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
+	bySeries := make(map[string][]core.DataPoint)
+	for _, p := range pts {
+		bySeries[seriesKey(d, p.Fields)] = append(bySeries[seriesKey(d, p.Fields)], p)
+	}
+	if d.CountsEmptyAsZero() {
+		if _, ok := bySeries[""]; !ok {
+			bySeries[""] = nil
+		}
+	}
+	for sk, sp := range bySeries {
+		var val float64
+		var ok bool
+		if d.Function == jobspec.FuncRate {
+			val, ok = e.rateValue(d, sp)
+		} else {
+			val, ok = detect.Aggregate(d.Function, d.Field, sp)
+		}
+		if !ok {
+			continue
+		}
+		mdl := e.models[d.ID()+"|"+sk]
+		if mdl == nil {
+			continue // no baseline learned yet — nothing to peek against
+		}
+		prob, score, typical, dir := mdl.Score(val)
+		if score < e.threshold {
+			continue
+		}
+		lower, upper := mdl.Bounds(boundsZ)
+		e.emit(br, d, core.Record{
+			Time: bt, Detector: d.ID(), Series: sk,
+			Actual: val, Typical: typical, Lower: lower, Upper: upper, Probability: prob,
+			Score: score, Direction: dir, Kind: "metric", Interim: true,
+			Influencers: e.influencers(d, sp),
+		})
+	}
+}
+
 // scoreTemporal is the standard per-series temporal detector: each by/partition
 // series is scored against its own learned baseline.
 func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
@@ -179,8 +287,21 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		sk := seriesKey(d, p.Fields)
 		bySeries[sk] = append(bySeries[sk], p)
 	}
+	// For a count-family single-series detector, an empty bucket is a real zero
+	// (a drop in traffic), so ensure the lone series is scored even with no points.
+	if d.CountsEmptyAsZero() {
+		if _, ok := bySeries[""]; !ok {
+			bySeries[""] = nil
+		}
+	}
 	for sk, sp := range bySeries {
-		val, ok := detect.Aggregate(d.Function, d.Field, sp)
+		var val float64
+		var ok bool
+		if d.Function == jobspec.FuncRate {
+			val, ok = e.rateValue(d, sp)
+		} else {
+			val, ok = detect.Aggregate(d.Function, d.Field, sp)
+		}
 		if !ok {
 			continue
 		}
@@ -188,6 +309,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 		e.touchSeries(mk)
 		var prob, score, typical float64
 		var dir core.Direction
+		var lower, upper float64
 		kind := "metric"
 		switch {
 		case d.Distribution:
@@ -204,22 +326,61 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 				e.seasonal[mk] = sm
 			}
 			prob, score, typical, dir = sm.Observe(bt, val)
+			lower, upper = sm.Bounds(boundsZ)
 		default:
 			mdl := e.model(mk, d.EffectiveSide())
 			prob, score, typical, dir = mdl.Observe(val)
 			if mdl.LastMulti() {
 				kind = "multi_bucket"
 			}
+			lower, upper = mdl.Bounds(boundsZ)
 		}
-		if score >= e.threshold {
+		admit := score >= e.threshold
+		if admit && e.job.Sensitivity > 0 {
+			admit = e.adaptiveAdmit(mk, score) // must also clear the series' own recent quantile
+		}
+		if admit {
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
-				Actual: val, Typical: typical, Probability: prob,
+				Actual: val, Typical: typical, Lower: lower, Upper: upper, Probability: prob,
 				Score: score, Direction: dir, Kind: kind,
 				Influencers: e.influencers(d, sp),
 			})
 		}
 	}
+}
+
+// rateValue computes the bucket's per-second rate: when a field is set it is the
+// sum of that field's values over the bucket span (a counter/throughput rate);
+// with no field it is the event count per second. Returns false for an empty
+// bucket only when there's nothing to rate — but a zero-count bucket is a
+// legitimate rate of 0, so count-rate always yields a value.
+func (e *Engine) rateValue(d jobspec.Detector, pts []core.DataPoint) (float64, bool) {
+	secs := e.job.BucketSpan.Seconds()
+	if secs <= 0 {
+		secs = 1
+	}
+	if d.Field == "" {
+		return float64(len(pts)) / secs, true // events per second
+	}
+	if len(pts) == 0 {
+		return 0, false
+	}
+	var s float64
+	for _, p := range pts {
+		s += valueRate(p, d.Field)
+	}
+	return s / secs, true
+}
+
+// valueRate reads a point's rate field (Values[field], falling back to Value).
+func valueRate(p core.DataPoint, field string) float64 {
+	if field != "" && p.Values != nil {
+		if v, ok := p.Values[field]; ok {
+			return v
+		}
+	}
+	return p.Value
 }
 
 // scorePopulation scores each member (over_field value) against a shared, pooled
@@ -441,9 +602,15 @@ func shannonEntropy(pts []core.DataPoint, field string) float64 {
 	return h
 }
 
-// scoreRare flags by_field values that are rare across the analysed window.
+// scoreRare flags by_field values that are rare across the analysed window. For
+// freq_rare the score is additionally weighted by the value's in-bucket
+// frequency — a rare value that recurs many times in one bucket is more
+// anomalous than a lone occurrence (Elastic ML's freq_rare intuition).
 func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
-	if rareValueScore < e.threshold {
+	freq := d.Function == jobspec.FuncFreqRare
+	// A plain rare hit is a fixed score; freq_rare can climb to 100 with frequency,
+	// so only the plain case can be short-circuited below threshold.
+	if !freq && rareValueScore < e.threshold {
 		return
 	}
 	tr := e.rare[d.ID()]
@@ -475,13 +642,83 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 			continue
 		}
 		if tr.seen[v] <= rareMaxBuckets {
+			score, kind := float64(rareValueScore), "rare"
+			if freq {
+				// +10 bits per doubling of in-bucket frequency, capped at 100.
+				score = math.Min(100, rareValueScore+10*math.Log2(float64(present[v]+1)))
+				kind = "freq_rare"
+			}
+			if score < e.threshold {
+				continue
+			}
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: v,
-				Actual: float64(present[v]), Score: rareValueScore, Direction: core.DirUp,
-				Kind: "rare", Influencers: []core.Influencer{{Field: d.ByField, Value: v}},
+				Actual: float64(present[v]), Score: score, Direction: core.DirUp,
+				Kind: kind, Influencers: []core.Influencer{{Field: d.ByField, Value: v}},
 			})
 		}
 	}
+}
+
+// adaptiveScoreWindow bounds the per-series recent-score ring.
+const adaptiveScoreWindow = 512
+
+// adaptiveAdmit records a score in the series' rolling window and reports whether
+// it clears the sensitivity quantile of that window — the per-series adaptive
+// gate. It records every score (so the quantile reflects the true distribution),
+// and admits while the window is still warming (too few samples to estimate a
+// quantile), so it never blocks a genuinely new series.
+func (e *Engine) adaptiveAdmit(mk string, score float64) bool {
+	if e.seriesScores == nil {
+		e.seriesScores = make(map[string][]float64)
+	}
+	buf := append(e.seriesScores[mk], score)
+	if len(buf) > adaptiveScoreWindow {
+		buf = buf[len(buf)-adaptiveScoreWindow:]
+	}
+	e.seriesScores[mk] = buf
+	if len(buf) < 20 {
+		return true // not enough history to gate on yet
+	}
+	return score >= stats.Quantile(buf, e.job.Sensitivity)
+}
+
+// gapFillActive reports whether the job has any detector for which a missing
+// bucket is a meaningful zero — if so, the engine materialises empty buckets so
+// a drop to zero is detected rather than silently skipped.
+func (e *Engine) gapFillActive() bool {
+	for _, d := range e.job.Detectors {
+		if d.CountsEmptyAsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+// fillGaps extends occupied bucket times with the empty buckets between them (at
+// bucket-span steps) and ensures the buckets map has a (nil) entry for each, so
+// scoreBucket scores them as zeros. Bounded by maxGapFill; over the bound it
+// leaves the occupied times untouched and records the skip. Returns the full
+// ordered time list.
+func (e *Engine) fillGaps(times []time.Time, span time.Duration, buckets map[time.Time][]core.DataPoint) []time.Time {
+	if len(times) < 2 {
+		return times
+	}
+	first, last := times[0], times[len(times)-1]
+	total := int(last.Sub(first)/span) + 1
+	if total > maxGapFill {
+		e.GapsSkipped += int64(total - len(times))
+		return times
+	}
+	full := make([]time.Time, 0, total)
+	for t := first; !t.After(last); t = t.Add(span) {
+		full = append(full, t)
+		if _, ok := buckets[t]; !ok {
+			buckets[t] = nil
+			e.GapsFilled++
+		}
+	}
+	return full
 }
 
 // model fetches (or lazily creates) a model by key.
@@ -542,6 +779,7 @@ func (e *Engine) dropSeries(key string) {
 	delete(e.distrib, key)
 	delete(e.multivar, key)
 	delete(e.slotModels, key)
+	delete(e.seriesScores, key)
 	e.Evicted++
 }
 
@@ -713,6 +951,9 @@ func (e *Engine) Run(points []core.DataPoint, threshold float64) []core.BucketRe
 		buckets[bt] = append(buckets[bt], p)
 	}
 	times := sortedTimes(buckets)
+	if e.gapFillActive() {
+		times = e.fillGaps(times, span, buckets)
+	}
 
 	out := make([]core.BucketResult, 0, len(times))
 	for _, bt := range times {
@@ -759,6 +1000,22 @@ func (e *Engine) closeBefore(limit time.Time) []core.BucketResult {
 		}
 	}
 	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	// Gap-fill the range being closed: for count-family jobs, buckets that saw no
+	// points between the earliest open bucket and the close boundary are scored as
+	// zeros (a silent series is a low anomaly), matching the batch Run path. The
+	// upper edge is the last bucket strictly before the limit (a fresh newer bucket
+	// arriving) or the last pending bucket on a Flush (zero limit).
+	if e.gapFillActive() && len(times) > 0 {
+		span := e.job.BucketSpan
+		first := times[0]
+		last := times[len(times)-1]
+		if !limit.IsZero() {
+			if b := limit.Add(-span); b.After(last) {
+				last = b
+			}
+		}
+		times = e.fillGaps([]time.Time{first, last}, span, e.pending)
+	}
 	out := make([]core.BucketResult, 0, len(times))
 	for _, t := range times {
 		out = append(out, e.scoreBucket(t, e.pending[t]))

@@ -292,6 +292,8 @@ budgets with their burn and severity). Endpoints:
 | `GET/DELETE /v1/jobs/{name}` | live-job status / removal |
 | `POST /v1/jobs/{name}/points` | push points (or `logs`) into a live job → the anomalies they produced |
 | `POST /v1/jobs/{name}/flush` | close the still-open bucket (end of a backfill, or a low-traffic job) |
+| `GET /v1/jobs/{name}/interim` | provisional (`is_interim`) scores for the still-open bucket — mid-bucket, without closing it |
+| `GET /v1/jobs/{name}/categories` | learned log-category catalogue (id, template, example messages, match counts) |
 | `POST /v1/otlp/v1/metrics` | **OTLP/HTTP** metrics export → routed to the live jobs that claim each metric |
 | `POST /v1/otlp/v1/logs` | OTLP/HTTP logs export → fed to every live categorization job |
 | `GET /v1/incidents` | tracked incidents (stable ids, open/resolved status); `?stateless=1` for a fresh one-shot correlation |
@@ -306,7 +308,7 @@ budgets with their burn and severity). Endpoints:
 | `GET /v1/topology` | the dependency graph (nodes + edges) correlation reasons over |
 | `POST /v1/outliers` | a table of rows → population outlier scores + feature influence |
 | `POST /v1/autopilot` | points in → an inferred job + its results |
-| `POST /v1/forecast` | `{"series": [...], "horizon": N}` → point forecast **+ 95% prediction bands** (uses the model plane if configured) |
+| `POST /v1/forecast` | `{"series": [...], "horizon": N}` → point forecast **+ 95% prediction bands**; add `"threshold": X` (+ optional `"side": "low"`) for a **predictive breach** check — will/when the value crosses the limit (uses the model plane if configured) |
 | `GET /v1/jobs` | analysed job names |
 | `GET /v1/results/{job}` | stored bucket results |
 | `GET /v1/grafana/{job}` | flat `time`/`score`/`detector`/`kind` rows for a Grafana table/time-series panel |
@@ -419,6 +421,7 @@ Three layers, so the engine stays a clean library and Python is optional:
 | **A5 ✅** | **Ecosystem**: REST API (`serve`) + embedded **Anomaly Explorer** UI + **Grafana** endpoint, **Loki** + **ClickHouse** datafeeds, distroless **Dockerfile** + `docker compose`, **Helm chart** with an optional Python model-plane sidecar |
 | **A6 🚧** | **Alerting** (`alert`: Slack / webhook / Alertmanager sinks, score floor + bucket-time dedup) ✅ · **`watch`** continuous mode (poll → detect → alert → persist, resumable, SIGTERM-safe) ✅ · **live jobs + OTLP/HTTP ingestion** (push metrics *and* logs straight from an OTel Collector) ✅ · **population outlier detection** (4-method ensemble + feature influence, `outliers` CLI + API, optional pyod plane) ✅ · Kafka ingestion, gRPC API — pending |
 | **Hardening ✅** | Full post-audit pass: 8 correctness fixes (snapshot-all-models, robust flat-baseline, exponential dips, renormalization, cross-batch topology, change-precedence, model-memory LRU, out-of-order guard), statistical recalibration (multi-bucket, two-sided, change-point trend, AIC, seasonality detrend + calendar-phase), correlation/SLO fixes (confidence share, coarse-influencer guard, calendar training-exclusion, no-data SLO, MWMBR burn, incident-identity), production (auth/TLS/rate-limit/body-cap/secret-redaction/atomic-state), and parity additions (`distinct_count`/`non_zero_count`/`varp`, forecast bands, influence scores). See CHANGELOG. |
+| **Precision ✅** | Ten precision/functionality upgrades (each with a regression test): **trend-aware baseline** (fitted-line scoring for genuine trends, steps still caught), **per-bucket typical bounds** (`lower`/`upper`), **warm-up confidence ramp**, **concept-drift rebase**, **adaptive per-series sensitivity** (`sensitivity`), new functions **`rate`/`non_null_sum`/`metric`/`freq_rare`**, **gap / missing-bucket** zero-fill for count-family (batch + streaming), **predictive breach** alerting (forecast × threshold/SLO), **interim** open-bucket results (`is_interim`, `/v1/jobs/{name}/interim`), and **categorization depth** (multiple examples + match counts, `/v1/jobs/{name}/categories`). See CHANGELOG. |
 
 ### Intelligence platform (consumes the engine)
 

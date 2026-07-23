@@ -46,13 +46,16 @@ func Aggregate(fn jobspec.Function, field string, pts []core.DataPoint) (float64
 	case jobspec.FuncVarp:
 		_, std := stats.MeanStd(vals)
 		return std * std, true // population variance
-	case jobspec.FuncSum:
+	case jobspec.FuncSum, jobspec.FuncNonNullSum:
+		// non_null_sum == sum here: our points carry no null metric, so every
+		// present value contributes.
 		var s float64
 		for _, v := range vals {
 			s += v
 		}
 		return s, true
-	case jobspec.FuncMean:
+	case jobspec.FuncMean, jobspec.FuncMetric:
+		// metric is scored on the mean (its central summary).
 		var s float64
 		for _, v := range vals {
 			s += v

@@ -27,13 +27,24 @@ type Record struct {
 	Series      string    `json:"series,omitempty"` // by/partition key ("" = whole job)
 	Actual      float64   `json:"actual"`           // observed bucket value
 	Typical     float64   `json:"typical"`          // model's expected value (baseline)
+	Lower       float64   `json:"lower,omitempty"`  // lower edge of the typical range (model_lower)
+	Upper       float64   `json:"upper,omitempty"`  // upper edge of the typical range (model_upper)
 	Probability float64   `json:"probability"`      // raw tail probability of the observation
 	Score       float64   `json:"score"`            // 0..100 normalized anomaly score
 	Direction   Direction `json:"direction"`
 	// Log-categorization evidence (set only for categorization records).
 	Kind     string `json:"kind,omitempty"`     // "metric" | "population" | "rare" | "new_category" | "rare_category" | "category_spike"
 	Template string `json:"template,omitempty"` // matched log template
-	Sample   string `json:"sample,omitempty"`   // an example raw message
+	Sample   string `json:"sample,omitempty"`   // the representative example raw message
+	// Categorization detail (set only for categorization records).
+	CategoryID int      `json:"category_id,omitempty"` // stable template/category identifier
+	Examples   []string `json:"examples,omitempty"`    // several distinct example messages
+	MatchCount int      `json:"match_count,omitempty"` // cumulative lines matched by this category
+	// Interim marks a provisional result computed from a still-open bucket before
+	// it closed (Elastic ML's is_interim). It lets a caller alert mid-bucket; the
+	// definitive record — which may differ or disappear — arrives when the bucket
+	// closes. Absent (false) on all final results.
+	Interim bool `json:"is_interim,omitempty"`
 	// Influencers rank the dimension values that contributed to this anomaly.
 	Influencers []Influencer `json:"influencers,omitempty"`
 }

@@ -246,9 +246,56 @@ func (s *Server) handleLiveJobs(w http.ResponseWriter, r *http.Request) {
 		s.handlePushPoints(w, r, lj)
 	case action == "flush" && r.Method == http.MethodPost:
 		s.handleFlush(w, r, lj)
+	case action == "interim" && r.Method == http.MethodGet:
+		s.handleInterim(w, r, lj)
+	case action == "categories" && r.Method == http.MethodGet:
+		s.handleCategories(w, r, lj)
 	default:
 		httpError(w, http.StatusNotFound, "unknown route")
 	}
+}
+
+// handleCategories returns the learned log-category catalogue (id, template,
+// examples, match counts) for a categorization job. Metric jobs have none.
+func (s *Server) handleCategories(w http.ResponseWriter, _ *http.Request, lj *liveJob) {
+	if !lj.Logs {
+		writeJSON(w, map[string]any{"job": lj.Name, "categories": []logcat.CategoryDefinition{}})
+		return
+	}
+	lj.mu.Lock()
+	cats := lj.cat.Categories()
+	lj.mu.Unlock()
+	writeJSON(w, map[string]any{"job": lj.Name, "categories": cats})
+}
+
+// handleInterim returns provisional (is_interim) results for the job's still-open
+// buckets, scored against the current baseline without closing them — a
+// mid-bucket peek for real-time alerting. Logs (categorization) jobs have no
+// interim path and return an empty set.
+func (s *Server) handleInterim(w http.ResponseWriter, _ *http.Request, lj *liveJob) {
+	if lj.Logs {
+		writeJSON(w, map[string]any{"job": lj.Name, "interim": []core.BucketResult{}})
+		return
+	}
+	lj.mu.Lock()
+	all := lj.eng.Interim()
+	lj.mu.Unlock()
+	// Keep only buckets that carry an above-threshold provisional record.
+	kept := make([]core.BucketResult, 0, len(all))
+	for _, br := range all {
+		recs := make([]core.Record, 0, len(br.Records))
+		for _, r := range br.Records {
+			if r.Score >= lj.Threshold {
+				recs = append(recs, r)
+			}
+		}
+		if len(recs) == 0 {
+			continue
+		}
+		br.Records = recs
+		kept = append(kept, br)
+	}
+	writeJSON(w, map[string]any{"job": lj.Name, "interim": kept})
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {

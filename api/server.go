@@ -290,6 +290,10 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Series  []float64 `json:"series"`
 		Horizon int       `json:"horizon"`
+		// Optional predictive breach check: does the forecast cross Threshold
+		// within the horizon? Side "high" tests an upper limit, "low" a lower one.
+		Threshold *float64 `json:"threshold,omitempty"`
+		Side      string   `json:"side,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
@@ -298,11 +302,16 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	if req.Horizon <= 0 {
 		req.Horizon = 12
 	}
-	writeJSON(w, map[string]any{
+	bands := s.provider.ForecastBands(req.Series, req.Horizon)
+	resp := map[string]any{
 		"periods":  s.provider.DetectSeasonality(req.Series),
 		"forecast": s.provider.Forecast(req.Series, req.Horizon),
-		"bands":    s.provider.ForecastBands(req.Series, req.Horizon),
-	})
+		"bands":    bands,
+	}
+	if req.Threshold != nil {
+		resp["breach"] = model.ForecastBreach(bands, *req.Threshold, req.Side != "low")
+	}
+	writeJSON(w, resp)
 }
 
 // handleJobs lists every job the server knows about — analysed batches and

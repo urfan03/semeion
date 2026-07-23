@@ -34,6 +34,16 @@ type SeasonalModel struct {
 	period      int
 	phases      []*Model
 	sinceDetect int
+	last        *Model // the phase (or global) model used by the most recent Observe
+}
+
+// Bounds returns the typical range from the phase model that scored the last
+// observation (so the band reflects the correct time-of-cycle baseline).
+func (m *SeasonalModel) Bounds(z float64) (lower, upper float64) {
+	if m.last == nil {
+		return 0, 0
+	}
+	return m.last.Bounds(z)
 }
 
 // NewSeasonalModel builds a seasonality-aware model. span is the job's bucket
@@ -69,10 +79,11 @@ func (m *SeasonalModel) Observe(t time.Time, value float64) (prob, score, typica
 
 	if m.period >= 2 && len(m.phases) == m.period {
 		ph := int(((bkt % int64(m.period)) + int64(m.period)) % int64(m.period))
-		prob, score, typical, dir = m.phases[ph].Observe(value)
+		m.last = m.phases[ph]
 	} else {
-		prob, score, typical, dir = m.global.Observe(value)
+		m.last = m.global
 	}
+	prob, score, typical, dir = m.last.Observe(value)
 
 	m.history = append(m.history, value)
 	m.histBkt = append(m.histBkt, bkt)

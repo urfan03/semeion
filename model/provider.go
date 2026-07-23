@@ -211,6 +211,75 @@ func forecastBands(x []float64, horizon int) []Band {
 	return bands
 }
 
+// Breach is the result of a predictive threshold/SLO check over a forecast: does
+// the projection cross a limit within the horizon, and when. It turns a forecast
+// into an actionable early warning ("error rate will exceed 5% in ~40 min").
+type Breach struct {
+	WillBreach bool `json:"will_breach"` // point forecast crosses the threshold within the horizon
+	// Step is 1-based buckets ahead of the breach (the first step the point
+	// forecast crosses). 0 when the point never crosses (Probability then carries
+	// the peak band-edge risk as an early warning).
+	Step        int     `json:"step"`
+	At          float64 `json:"at"`          // forecast point value at Step (or the last step when Step==0)
+	Threshold   float64 `json:"threshold"`   // the limit tested
+	Side        string  `json:"side"`        // "high" (upper limit) or "low" (lower limit)
+	Probability float64 `json:"probability"` // P(true value beyond the threshold) at that step, from the band
+}
+
+// ForecastBreach evaluates a forecast (its prediction bands) against a threshold.
+// side high tests an UPPER limit (breach when the value rises to/above it —
+// error rate, latency, saturation); side low tests a LOWER limit (breach when the
+// value falls to/below it — success rate, free disk, throughput). It reports the
+// first step whose point forecast crosses the threshold, with the probability the
+// true value has crossed there (derived from the band width, treated as a 95%
+// Gaussian interval). When the point never crosses, WillBreach is false but
+// Probability still carries the peak band-edge risk over the horizon — an early
+// warning before the expected value itself breaches.
+func ForecastBreach(bands []Band, threshold float64, high bool) Breach {
+	b := Breach{Threshold: threshold, Side: "low"}
+	if high {
+		b.Side = "high"
+	}
+	breachProb := func(bd Band) float64 {
+		sd := (bd.Upper - bd.Lower) / (2 * 1.96)
+		if sd <= 0 {
+			if (high && bd.Point >= threshold) || (!high && bd.Point <= threshold) {
+				return 1
+			}
+			return 0
+		}
+		if high {
+			return normUpperTail((threshold - bd.Point) / sd)
+		}
+		return normUpperTail((bd.Point - threshold) / sd)
+	}
+	var peakProb float64
+	peakAt := 0.0
+	for h, bd := range bands {
+		crosses := (high && bd.Point >= threshold) || (!high && bd.Point <= threshold)
+		if crosses {
+			b.WillBreach = true
+			b.Step = h + 1
+			b.At = bd.Point
+			b.Probability = breachProb(bd)
+			return b
+		}
+		if p := breachProb(bd); p >= peakProb {
+			peakProb, peakAt = p, bd.Point
+		}
+	}
+	// No point crossing — surface the peak band-edge risk as an early warning.
+	b.Probability = peakProb
+	b.At = peakAt
+	return b
+}
+
+// normUpperTail returns P(Z ≥ z) for a standard normal — the upper-tail
+// probability used to turn a forecast band into a breach probability.
+func normUpperTail(z float64) float64 {
+	return 0.5 * math.Erfc(z/math.Sqrt2)
+}
+
 // residualStd is the std of the series' residuals after removing trend (and
 // seasonality when present) — the noise the forecast can't explain.
 func residualStd(x []float64) float64 {

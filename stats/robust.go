@@ -26,6 +26,50 @@ func Median(xs []float64) float64 {
 	return (cp[n/2-1] + cp[n/2]) / 2
 }
 
+// Quantile returns the q-quantile (0..1) of xs via linear interpolation,
+// without mutating it. Used for per-series adaptive sensitivity.
+func Quantile(xs []float64, q float64) float64 {
+	n := len(xs)
+	if n == 0 {
+		return 0
+	}
+	if q <= 0 {
+		return minOf(xs)
+	}
+	if q >= 1 {
+		return maxOf(xs)
+	}
+	c := append([]float64(nil), xs...)
+	sort.Float64s(c)
+	pos := q * float64(n-1)
+	lo := int(pos)
+	frac := pos - float64(lo)
+	if lo+1 >= n {
+		return c[n-1]
+	}
+	return c[lo] + frac*(c[lo+1]-c[lo])
+}
+
+func minOf(xs []float64) float64 {
+	m := xs[0]
+	for _, v := range xs[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
+func maxOf(xs []float64) float64 {
+	m := xs[0]
+	for _, v := range xs[1:] {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
 // MAD returns the median and the Median Absolute Deviation of xs. MAD has a 50%
 // breakdown point — half the samples can be outliers and it still converges to
 // the true scale — which is why it beats stddev for learning baselines.
