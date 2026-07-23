@@ -4,6 +4,41 @@ All notable changes to semeion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+A precision-and-correctness hardening pass — measuring, proving, and fixing
+rather than adding surface. Three real bugs were found and fixed by the new
+tests; all 21 packages green.
+
+### Correctness / robustness
+- **Concurrency**: a multi-goroutine ingest+read stress test (deadlock/panic
+  guard) and a `make race` target for `-race` where a C toolchain is available.
+- **NaN/Inf hardening**: every model family (temporal, distribution,
+  multivariate, geo) ignores non-finite input instead of poisoning its baseline
+  or emitting non-finite scores.
+- **Parser fuzzing** (`go test -fuzz`) for snappy, remote-write protobuf, OTLP,
+  Cloudflare and CSV — which **found and fixed a snappy decompression-bomb DoS**
+  (a crafted length prefix forced a multi-GB allocation); allocation is now
+  bounded and the decoded size capped.
+- **Determinism**: identical input now yields byte-identical output — fixed
+  nondeterministic influencer tie-breaks (`sort.Slice` → stable + keyed;
+  `dominant` map-tie → lexicographic) and stable per-bucket record ordering.
+- **Snapshot fixed-point**: a restored engine reproduces the original's
+  subsequent results exactly — **fixed drift state (`driftRun`/`driftSign`) not
+  being persisted** in ModelState.
+
+### Measuring / proof
+- **Score calibration** test: the false-positive rate on stationary noise is
+  ~0% at score ≥ 50 (locked in as a regression guard).
+- **Golden test**: exact F1 = 1.0 detection on a fixed clear-spike corpus.
+- **NAB corpus scoring**: `semeion nab --csv --windows` runs the Numenta
+  benchmark on real data; `make bench` / `make bench-nab` targets.
+
+### Scale
+- **Benchmarks** (`make bench`): batch and streaming throughput + allocations.
+- **Memory-bound test**: under 6000-series cardinality with `MaxSeries=500`,
+  resident models stay bounded and eviction fires (no table leaks).
+
 ## [0.4.0]
 
 Eight capability additions (each with a regression test; all 21 packages green).
