@@ -28,6 +28,13 @@ type SeasonalState struct {
 	SinceDetect int           `json:"since_detect"`
 	Global      ModelState    `json:"global"`
 	Phases      []ModelState  `json:"phases,omitempty"`
+	// Multi-seasonal decomposition (present only when two independent periods were
+	// found), so daily+weekly modelling survives a restart instead of cold-starting.
+	Period2 int         `json:"period2,omitempty"`
+	Level   float64     `json:"level,omitempty"`
+	Comp1   []float64   `json:"comp1,omitempty"`
+	Comp2   []float64   `json:"comp2,omitempty"`
+	Resid   *ModelState `json:"resid,omitempty"`
 }
 
 // State returns a copy of the seasonal model's learned state.
@@ -41,9 +48,17 @@ func (m *SeasonalModel) State() SeasonalState {
 		Period:      m.period,
 		SinceDetect: m.sinceDetect,
 		Global:      m.global.State(),
+		Period2:     m.period2,
+		Level:       m.level,
+		Comp1:       append([]float64(nil), m.comp1...),
+		Comp2:       append([]float64(nil), m.comp2...),
 	}
 	for _, ph := range m.phases {
 		s.Phases = append(s.Phases, ph.State())
+	}
+	if m.resid != nil {
+		rs := m.resid.State()
+		s.Resid = &rs
 	}
 	return s
 }
@@ -67,9 +82,16 @@ func SeasonalFromState(s SeasonalState, prov model.Provider) *SeasonalModel {
 		idx:         s.Idx,
 		period:      s.Period,
 		sinceDetect: s.SinceDetect,
+		period2:     s.Period2,
+		level:       s.Level,
+		comp1:       append([]float64(nil), s.Comp1...),
+		comp2:       append([]float64(nil), s.Comp2...),
 	}
 	for _, ps := range s.Phases {
 		m.phases = append(m.phases, ModelFromState(ps))
+	}
+	if s.Resid != nil {
+		m.resid = ModelFromState(*s.Resid)
 	}
 	return m
 }
