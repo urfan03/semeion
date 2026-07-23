@@ -146,6 +146,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/results/", s.handleResults)
 	mux.HandleFunc("/v1/influencers/", s.handleInfluencers)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
+	// Grafana SimpleJSON datasource surface (interactive; point a datasource here).
+	mux.HandleFunc("/grafana/search", s.handleGrafanaSearch)
+	mux.HandleFunc("/grafana/query", s.handleGrafanaQuery)
+	mux.HandleFunc("/grafana/annotations", s.handleGrafanaAnnotations)
+	mux.HandleFunc("/grafana/", s.handleGrafanaRoot)
 	// OTLP/HTTP paths, so an OpenTelemetry Collector can point `otlphttp` at
 	// this server directly (endpoint: http://semeion:8080/v1/otlp).
 	mux.HandleFunc("/v1/otlp/v1/metrics", s.handleOTLPMetrics)
