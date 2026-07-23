@@ -61,6 +61,7 @@ type Engine struct {
 	seriesLRU    map[string]int64
 	seriesScores map[string][]float64
 	lastSeen     map[string]time.Time
+	feedback     map[string]int
 	curBucket    time.Time
 	lruTick      int64
 	MaxSeries    int
@@ -888,11 +889,37 @@ func (e *Engine) emit(br *core.BucketResult, d jobspec.Detector, r core.Record) 
 	if e.suppressed(d, r) {
 		return
 	}
-
+	if e.feedback != nil {
+		if fp := e.feedback[d.ID()+"|"+r.Series]; fp > 0 {
+			penalty := float64(fp) * fpPenaltyStep
+			if penalty > fpPenaltyMax {
+				penalty = fpPenaltyMax
+			}
+			if r.Score < e.threshold+penalty {
+				return
+			}
+		}
+	}
 	if r.Probability <= 0 && r.Score > 0 {
 		r.Probability = probFromScore(r.Score)
 	}
 	addRec(br, r)
+}
+
+const (
+	fpPenaltyStep = 8.0
+	fpPenaltyMax  = 40.0
+)
+
+func (e *Engine) MarkFalsePositive(detectorID, series string) {
+	if e.feedback == nil {
+		e.feedback = make(map[string]int)
+	}
+	e.feedback[detectorID+"|"+series]++
+}
+
+func (e *Engine) ClearFeedback(detectorID, series string) {
+	delete(e.feedback, detectorID+"|"+series)
 }
 
 func probFromScore(score float64) float64 {

@@ -235,9 +235,39 @@ func (s *Server) handleLiveJobs(w http.ResponseWriter, r *http.Request) {
 		s.handleCategories(w, r, lj)
 	case action == "stale" && r.Method == http.MethodGet:
 		s.handleStale(w, r, lj)
+	case action == "feedback" && r.Method == http.MethodPost:
+		s.handleFeedback(w, r, lj)
 	default:
 		httpError(w, http.StatusNotFound, "unknown route")
 	}
+}
+
+func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request, lj *liveJob) {
+	if lj.Logs {
+		httpError(w, http.StatusBadRequest, "feedback applies to metric jobs")
+		return
+	}
+	var req struct {
+		Detector      string `json:"detector"`
+		Series        string `json:"series"`
+		FalsePositive bool   `json:"false_positive"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if req.Detector == "" {
+		httpError(w, http.StatusBadRequest, "detector is required")
+		return
+	}
+	lj.mu.Lock()
+	if req.FalsePositive {
+		lj.eng.MarkFalsePositive(req.Detector, req.Series)
+	} else {
+		lj.eng.ClearFeedback(req.Detector, req.Series)
+	}
+	lj.mu.Unlock()
+	writeJSON(w, map[string]any{"job": lj.Name, "detector": req.Detector, "series": req.Series, "false_positive": req.FalsePositive})
 }
 
 func (s *Server) handleStale(w http.ResponseWriter, r *http.Request, lj *liveJob) {
