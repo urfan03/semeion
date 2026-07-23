@@ -11,6 +11,13 @@ test:
 race:
 	CGO_ENABLED=1 go test -race ./...
 
+bench:
+	go test -run '^$$' -bench . -benchmem ./...
+
+bench-nab:
+	@test -n "$(NAB)" || (echo "set NAB=/path/to/nab (a checkout of numenta/NAB)"; exit 1)
+	go run ./cmd/semeion nab --csv "$(NAB)/data/$(FILE)" --windows "$(NAB)/labels/$(FILE).windows.json"
+
 vet:
 	go vet ./...
 
