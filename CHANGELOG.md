@@ -39,6 +39,27 @@ tests; all 21 packages green.
 - **Memory-bound test**: under 6000-series cardinality with `MaxSeries=500`,
   resident models stay bounded and eviction fires (no table leaks).
 
+## [0.8.0]
+
+The remaining Elastic-ML operational-parity backlog, plus a latent bug the work
+surfaced. Each item tested; all packages green.
+
+- **Elasticsearch datafeed can now feed split detectors**: a `SplitField` adds a
+  `terms` sub-aggregation, so the source yields one series per partition/by value
+  (previously it collapsed everything to a single series). Long ranges are fetched
+  in time chunks (≤5000 buckets/query) to respect `search.max_buckets`.
+- **Model-snapshot retention**: `FileStore.RetainVersions(name, maxAge)` prunes
+  snapshots older than a cutoff (always keeping the newest), the
+  `model_snapshot_retention_days` equivalent.
+- **Forecast lifecycle**: forecasts are now persisted artifacts — `POST/GET/DELETE
+  /v1/forecasts` with per-forecast `expires_in`, one active forecast per job
+  (re-POST overwrites), expired ones pruned on read.
+- **Job groups**: `Job.Groups` + `GET /v1/jobs?group=<g>` filter; groups surfaced
+  in live job status.
+- **Bug fix**: the JSON job loader silently dropped `groups` **and**
+  `sensitivity` (they were absent from the parse shadow-struct), so adaptive
+  sensitivity set via a JSON job spec was never applied. Both now round-trip.
+
 ## [0.7.0]
 
 A deep algorithmic-correctness audit of the core math, then every genuine finding
