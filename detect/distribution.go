@@ -27,6 +27,9 @@ func NewDistributionModel(side jobspec.Side, prov model.Provider) *DistributionM
 }
 
 func (m *DistributionModel) Observe(value float64) (prob, score, typical float64, dir core.Direction) {
+	if !finite(value) {
+		return 1, 0, 0, core.DirUp
+	}
 	if len(m.history) < m.warmup {
 		m.push(value)
 		return 1, 0, value, core.DirUp

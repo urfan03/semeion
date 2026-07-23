@@ -17,6 +17,11 @@ func (m *MultivariateModel) Observe(vec []float64) (prob, score, dist float64, c
 	if len(vec) != m.k {
 		return 1, 0, 0, nil
 	}
+	for _, v := range vec {
+		if !finite(v) {
+			return 1, 0, 0, nil
+		}
+	}
 	if len(m.history) < m.warmup {
 		m.push(vec)
 		return 1, 0, 0, nil

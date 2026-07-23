@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmtcheck demo tidy all
+.PHONY: build test vet fmt fmtcheck demo tidy race all
 
 all: fmtcheck vet test build
 
@@ -7,6 +7,9 @@ build:
 
 test:
 	go test ./...
+
+race:
+	CGO_ENABLED=1 go test -race ./...
 
 vet:
 	go vet ./...

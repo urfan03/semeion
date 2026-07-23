@@ -47,6 +47,9 @@ func NewModelWarmup(side jobspec.Side, window, warmup int) *Model {
 }
 
 func (m *Model) Score(value float64) (prob, score, typical float64, dir core.Direction) {
+	if !finite(value) {
+		return 1, 0, m.lastTypical, core.DirUp
+	}
 	prob, score, typical, _, dir = m.evaluate(value)
 	return prob, score, typical, dir
 }
@@ -210,9 +213,19 @@ func isIntegerSeries(history []float64) bool {
 	return true
 }
 
-func (m *Model) Learn(value float64) { m.push(value) }
+func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+
+func (m *Model) Learn(value float64) {
+	if !finite(value) {
+		return
+	}
+	m.push(value)
+}
 
 func (m *Model) Observe(value float64) (prob, score, typical float64, dir core.Direction) {
+	if !finite(value) {
+		return 1, 0, m.lastTypical, core.DirUp
+	}
 	var z float64
 	prob, score, typical, z, dir = m.evaluate(value)
 
