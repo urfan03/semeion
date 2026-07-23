@@ -13,6 +13,7 @@ import (
 
 	"github.com/urfan03/semeion/alert"
 	"github.com/urfan03/semeion/core"
+	"github.com/urfan03/semeion/datafeed"
 	"github.com/urfan03/semeion/engine"
 	"github.com/urfan03/semeion/ingest"
 	"github.com/urfan03/semeion/jobspec"
@@ -441,6 +442,42 @@ func (s *Server) handleCloudflareLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"accepted": len(points), "skipped": skipped,
 		"metric_jobs": len(metricJobs), "log_jobs": len(logJobs), "anomalies": anomalies,
+	})
+}
+
+// handlePromRemoteWrite accepts a Prometheus remote_write request (Snappy-
+// compressed protobuf) and fans each sample to the live metric jobs bound to its
+// metric name (or to no metric). Prometheus can `remote_write` straight to
+// semeion — no scrape loop.
+func (s *Server) handlePromRemoteWrite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	body, err := readLimited(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	samples, err := datafeed.ParseRemoteWrite(body)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	byMetric := map[string][]core.DataPoint{}
+	for _, sm := range samples {
+		byMetric[sm.Metric] = append(byMetric[sm.Metric], sm.Point)
+	}
+	anomalies := 0
+	seen := map[*liveJob]bool{}
+	for metric, pts := range byMetric {
+		for _, lj := range s.metricJobs(metric) {
+			anomalies += len(s.pushPoints(r.Context(), lj, pts))
+			seen[lj] = true
+		}
+	}
+	writeJSON(w, map[string]any{
+		"accepted": len(samples), "metrics": len(byMetric), "jobs": len(seen), "anomalies": anomalies,
 	})
 }
 
