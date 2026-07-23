@@ -27,6 +27,7 @@ const (
 	FuncTimeOfDay     Function = "time_of_day"
 	FuncTimeOfWeek    Function = "time_of_week"
 	FuncLatLong       Function = "lat_long"
+	FuncRatio         Function = "ratio"
 )
 
 type Side string
@@ -40,6 +41,7 @@ const (
 type Detector struct {
 	Function       Function `json:"function"                  yaml:"function"`
 	Field          string   `json:"field,omitempty"           yaml:"field,omitempty"`
+	DenomField     string   `json:"denom_field,omitempty"     yaml:"denom_field,omitempty"`
 	Side           Side     `json:"side,omitempty"            yaml:"side,omitempty"`
 	ByField        string   `json:"by_field,omitempty"        yaml:"by_field,omitempty"`
 	PartitionField string   `json:"partition_field,omitempty" yaml:"partition_field,omitempty"`
@@ -140,6 +142,8 @@ func (d Detector) ID() string {
 			return "lat_long by " + d.ByField
 		}
 		return "lat_long"
+	case d.Function == FuncRatio:
+		return fmt.Sprintf("ratio(%s/%s)", d.Field, d.DenomField)
 	case d.OverField != "" && d.Field != "":
 		return fmt.Sprintf("%s(%s) over %s", d.Function, d.Field, d.OverField)
 	case d.OverField != "":
@@ -173,6 +177,9 @@ func (j *Job) Validate() error {
 		}
 		if d.Function == FuncInfoContent && d.ByField == "" {
 			return fmt.Errorf("job %q: detector %d (info_content): by_field is required", j.Name, i)
+		}
+		if d.Function == FuncRatio && (d.Field == "" || d.DenomField == "") {
+			return fmt.Errorf("job %q: detector %d (ratio): field and denom_field are required", j.Name, i)
 		}
 	}
 	return nil

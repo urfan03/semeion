@@ -133,6 +133,8 @@ func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResu
 			e.scoreTimeOf(&br, d, bt, pts)
 		case d.Function == jobspec.FuncLatLong:
 			e.scoreGeo(&br, d, bt, pts)
+		case d.Function == jobspec.FuncRatio:
+			e.scoreRatio(&br, d, bt, pts)
 		case d.IsPopulation():
 			e.scorePopulation(&br, d, bt, pts)
 		default:
@@ -214,6 +216,44 @@ func (e *Engine) scoreTemporalPeek(br *core.BucketResult, d jobspec.Detector, bt
 			Score: score, Direction: dir, Kind: "metric", Interim: true,
 			Influencers: e.influencers(d, sp),
 		})
+	}
+}
+
+func (e *Engine) scoreRatio(br *core.BucketResult, d jobspec.Detector, bt time.Time, pts []core.DataPoint) {
+	bySeries := make(map[string][]core.DataPoint)
+	for _, p := range pts {
+		sk := seriesKey(d, p.Fields)
+		bySeries[sk] = append(bySeries[sk], p)
+	}
+	for sk, sp := range bySeries {
+		num, den := 0.0, 0.0
+		for _, p := range sp {
+			if p.Values != nil {
+				num += p.Values[d.Field]
+				den += p.Values[d.DenomField]
+			}
+		}
+		if den == 0 {
+			continue
+		}
+		val := num / den
+		mk := d.ID() + "|" + sk
+		e.touchSeries(mk)
+		mdl := e.model(mk, d.EffectiveSide())
+		prob, score, typical, dir := mdl.Observe(val)
+		lower, upper := mdl.Bounds(boundsZ)
+		admit := score >= e.threshold
+		if admit && e.job.Sensitivity > 0 {
+			admit = e.adaptiveAdmit(mk, score)
+		}
+		if admit {
+			e.emit(br, d, core.Record{
+				Time: bt, Detector: d.ID(), Series: sk,
+				Actual: val, Typical: typical, Lower: lower, Upper: upper, Probability: prob,
+				Score: score, Direction: dir, Kind: "ratio",
+				Influencers: e.influencers(d, sp),
+			})
+		}
 	}
 }
 

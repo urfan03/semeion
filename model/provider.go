@@ -140,8 +140,12 @@ func forecast(x []float64, horizon int) []float64 {
 	}
 	if periods := detectSeasonality(x); len(periods) > 0 {
 		p := periods[0]
+		if n >= 2*p {
+			if hw := holtWinters(x, p, horizon); hw != nil {
+				return hw
+			}
+		}
 		d := decompose(x, p)
-
 		slope, intercept := linFit(d.Trend)
 		for h := 0; h < horizon; h++ {
 			j := n + h
@@ -154,6 +158,59 @@ func forecast(x []float64, horizon int) []float64 {
 		out[h] = intercept + slope*float64(n+h)
 	}
 	return out
+}
+
+func holtWinters(x []float64, period, horizon int) []float64 {
+	n := len(x)
+	if period < 2 || n < 2*period || horizon <= 0 {
+		return nil
+	}
+	best := math.Inf(1)
+	var bestFit []float64
+	for _, a := range []float64{0.1, 0.3, 0.5, 0.7} {
+		for _, b := range []float64{0.05, 0.1, 0.3} {
+			for _, g := range []float64{0.1, 0.3, 0.5} {
+				fit, sse := holtWintersFit(x, period, horizon, a, b, g)
+				if sse < best {
+					best, bestFit = sse, fit
+				}
+			}
+		}
+	}
+	return bestFit
+}
+
+func holtWintersFit(x []float64, period, horizon int, alpha, beta, gamma float64) ([]float64, float64) {
+	n := len(x)
+	seasonal := make([]float64, period)
+	var first, second float64
+	for i := 0; i < period; i++ {
+		first += x[i]
+		second += x[period+i]
+	}
+	first /= float64(period)
+	second /= float64(period)
+	level := first
+	trend := (second - first) / float64(period)
+	for i := 0; i < period; i++ {
+		seasonal[i] = x[i] - first
+	}
+	var sse float64
+	for t := period; t < n; t++ {
+		s := seasonal[t%period]
+		predicted := level + trend + s
+		e := x[t] - predicted
+		sse += e * e
+		prevLevel := level
+		level = alpha*(x[t]-s) + (1-alpha)*(level+trend)
+		trend = beta*(level-prevLevel) + (1-beta)*trend
+		seasonal[t%period] = gamma*(x[t]-level) + (1-gamma)*s
+	}
+	out := make([]float64, horizon)
+	for h := 0; h < horizon; h++ {
+		out[h] = level + float64(h+1)*trend + seasonal[(n+h)%period]
+	}
+	return out, sse
 }
 
 type Band struct {
