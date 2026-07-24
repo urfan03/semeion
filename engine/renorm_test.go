@@ -66,6 +66,27 @@ func TestRenormalizeDoesNotFavorProbabilityLessRecords(t *testing.T) {
 	}
 }
 
+func TestRenormalizeUnderflowNotOutranked(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	results := []core.BucketResult{
+		{Time: t0, Records: []core.Record{{
+			Time: t0, Detector: "count", Series: "host=a", Score: 100, Probability: 1e-12,
+		}}},
+		{Time: t0.Add(time.Minute), Records: []core.Record{{
+			Time: t0.Add(time.Minute), Detector: "count", Series: "host=a", Score: 100, Probability: 1e-23,
+		}}},
+	}
+	RenormalizeResults(results)
+	underflow := results[0].Records[0].Score
+	representable := results[1].Records[0].Score
+	if underflow < representable {
+		t.Fatalf("an underflowed (maximally extreme) anomaly must not renormalize below a less-extreme one: underflow=%.2f representable=%.2f", underflow, representable)
+	}
+	if underflow < 99.9 || representable < 99.9 {
+		t.Fatalf("two maximally-extreme records should both pin to ~100, got underflow=%.2f representable=%.2f", underflow, representable)
+	}
+}
+
 func TestCalendarWindowExcludedFromTraining(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	span := time.Minute

@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestGrangerTinyMagnitude(t *testing.T) {
+	const n = 200
+	const scale = 1e-6
+	a := make([]float64, n)
+	b := make([]float64, n)
+	for i := 0; i < n; i++ {
+		a[i] = scale * math.Sin(float64(i)*0.3)
+	}
+	for i := 1; i < n; i++ {
+		b[i] = 0.6*b[i-1] + 0.9*a[i-1]
+	}
+	impAB, _ := Granger(a, b, 2)
+	impBA, _ := Granger(b, a, 2)
+	if impAB < 0.05 {
+		t.Fatalf("a->b should show clear improvement even at tiny magnitude, got %.4f", impAB)
+	}
+	if impAB <= impBA {
+		t.Fatalf("a->b (%.4f) should dominate b->a (%.4f)", impAB, impBA)
+	}
+}
+
 func TestLeadLagDetectsLead(t *testing.T) {
 	n := 300
 	a := make([]float64, n)

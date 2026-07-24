@@ -1,0 +1,14 @@
+semeion {{ .Chart.AppVersion }} is installed as {{ include "semeion.fullname" . }}.
+
+Anomaly Explorer + API:
+{{- if .Values.ingress.enabled }}
+  http://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "semeion.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  then open http://localhost:{{ .Values.service.port }}/
+{{- end }}
+
+Model plane: {{ if .Values.modelPlane.enabled }}enabled ({{ include "semeion.modelURL" . }}) — SciPy/statsmodels back the seasonality, decomposition and forecast calls.{{ else }}disabled — the built-in Go provider handles every model call.{{ end }}
+
+Post a job and some points:
+  curl -XPOST http://localhost:{{ .Values.service.port }}/v1/analyze -d @request.json

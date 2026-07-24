@@ -15,6 +15,8 @@ import (
 
 const maxChanges = 1000
 
+const maxCorrelateSymptoms = 50000
+
 func (s *Server) RecordChange(c correlate.Change) {
 	if c.Time.IsZero() {
 		c.Time = time.Now().UTC()
@@ -69,6 +71,10 @@ func (s *Server) correlateAll(opt correlate.Options) (incidents []correlate.Inci
 }
 
 func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
 
 	switch strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/incidents"), "/") {
 	case "open":
@@ -171,6 +177,14 @@ func (s *Server) handleCorrelate(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if len(req.Symptoms) > maxCorrelateSymptoms {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("symptoms exceed max %d", maxCorrelateSymptoms))
+		return
+	}
+	if len(req.Changes) > maxChanges {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("changes exceed max %d", maxChanges))
 		return
 	}
 	opt := correlate.Options{MinScore: req.MinScore}

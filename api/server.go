@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -107,6 +108,14 @@ func (s *Server) WithOutlierDetector(d outlier.Detector) *Server {
 func (s *Server) Store(job string, results []core.BucketResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.results[job]; !ok {
+		for len(s.results) >= maxResultJobs {
+			for k := range s.results {
+				delete(s.results, k)
+				break
+			}
+		}
+	}
 	s.results[job] = results
 }
 
@@ -156,7 +165,19 @@ func (s *Server) Handler() http.Handler {
 	h = s.withAuth(h)
 	h = s.withRateLimit(h)
 	h = withBodyLimit(h)
+	h = withRecover(h)
 	return h
+}
+
+func withRecover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				httpError(w, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withBodyLimit(next http.Handler) http.Handler {
@@ -288,6 +309,14 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	if req.Horizon <= 0 {
 		req.Horizon = 12
 	}
+	if req.Horizon > maxForecastHorizon {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("horizon exceeds max %d", maxForecastHorizon))
+		return
+	}
+	if len(req.Series) > maxSeriesLen {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("series exceeds max length %d", maxSeriesLen))
+		return
+	}
 	bands := s.provider.ForecastBands(req.Series, req.Horizon)
 	resp := map[string]any{
 		"periods":  s.provider.DetectSeasonality(req.Series),
@@ -310,6 +339,10 @@ func (s *Server) handleChangePoints(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if len(req.Series) > maxSeriesLen {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("series exceeds max length %d", maxSeriesLen))
 		return
 	}
 	writeJSON(w, map[string]any{
@@ -341,6 +374,24 @@ func (s *Server) handleLeadLag(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Order <= 0 {
 		req.Order = 3
+	}
+	if req.MaxLag > maxLagCap {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("max_lag exceeds max %d", maxLagCap))
+		return
+	}
+	if req.Order > maxOrderCap {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("order exceeds max %d", maxOrderCap))
+		return
+	}
+	if len(req.Target) > maxSeriesLen || len(req.A) > maxSeriesLen || len(req.B) > maxSeriesLen {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("series exceeds max length %d", maxSeriesLen))
+		return
+	}
+	for _, c := range req.Candidates {
+		if len(c) > maxSeriesLen {
+			httpError(w, http.StatusBadRequest, fmt.Sprintf("candidate series exceeds max length %d", maxSeriesLen))
+			return
+		}
 	}
 	if len(req.Candidates) > 0 {
 		writeJSON(w, map[string]any{
@@ -400,6 +451,17 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 const maxBodyBytes = 32 << 20
+
+const (
+	maxForecastHorizon = 10000
+	maxResultJobs      = 2000
+	maxLiveJobsCount   = 2000
+	maxSLOSeries       = 2000
+	maxForecasts       = 2000
+	maxSeriesLen       = 100000
+	maxLagCap          = 1000
+	maxOrderCap        = 100
+)
 
 func readLimited(r *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
@@ -485,7 +547,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := s.history.Query(job, from, to)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		httpError(w, http.StatusInternalServerError, "could not read history")
 		return
 	}
 	writeJSON(w, map[string]any{"job": job, "records": recs})
@@ -540,10 +602,16 @@ func httpError(w http.ResponseWriter, code int, msg string) {
 }
 
 func (s *Server) ListenAndServe(addr string) error {
+	if s.authToken == "" {
+		fmt.Fprintf(os.Stderr, "semeion: WARNING serving %s without an auth token; anyone who can reach this address has full access (set --auth-token)\n", addr)
+	}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return srv.ListenAndServe()
 }

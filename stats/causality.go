@@ -49,6 +49,27 @@ func pearson(x, y []float64) float64 {
 	return sxy / math.Sqrt(sxx*syy)
 }
 
+func standardize(x []float64) []float64 {
+	n := len(x)
+	if n == 0 {
+		return nil
+	}
+	m := meanOf(x)
+	var ss float64
+	for _, v := range x {
+		ss += (v - m) * (v - m)
+	}
+	sd := math.Sqrt(ss / float64(n))
+	if sd == 0 || math.IsNaN(sd) || math.IsInf(sd, 0) {
+		return nil
+	}
+	out := make([]float64, n)
+	for i, v := range x {
+		out[i] = (v - m) / sd
+	}
+	return out
+}
+
 func meanOf(x []float64) float64 {
 	if len(x) == 0 {
 		return 0
@@ -77,6 +98,11 @@ func Granger(a, b []float64, order int) (improvement, fStat float64) {
 		n = len(b)
 	}
 	if order < 1 || n <= 3*order+1 {
+		return 0, 0
+	}
+	a = standardize(a[:n])
+	b = standardize(b[:n])
+	if a == nil || b == nil {
 		return 0, 0
 	}
 

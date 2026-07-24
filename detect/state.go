@@ -109,7 +109,7 @@ func DistributionFromState(s DistributionState, prov model.Provider) *Distributi
 	if s.Window <= 0 {
 		s.Window = defaultWindow
 	}
-	if s.Warmup < 0 {
+	if s.Warmup <= 0 {
 		s.Warmup = defaultWarmup
 	}
 	return &DistributionModel{
@@ -142,7 +142,7 @@ func MultivariateFromState(s MultivariateState) *MultivariateModel {
 	if s.Window <= 0 {
 		s.Window = defaultWindow
 	}
-	if s.Warmup < 0 {
+	if s.Warmup <= 0 {
 		s.Warmup = defaultWarmup
 	}
 	hist := make([][]float64, len(s.History))

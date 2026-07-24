@@ -1,0 +1,95 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/urfan03/semeion
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Seed synthetic demo jobs so the UI has content. Off by default for real
+# deployments; the binary's own default is on (for `semeion serve` first-run).
+demo: false
+
+# Extra args appended after `serve --addr=:8080`.
+extraArgs: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: semeion.local
+  path: /
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Continuous detection: one `semeion watch` Deployment per job. The job JSON is
+# rendered into a ConfigMap; sinks are plain flags.
+#
+# Note: a watcher keeps its baselines in memory, so a restart re-warms them from
+# the lookback window (it does not alert on the warm-up). Mount a PVC and pass
+# --state via extraArgs if you need them to survive restarts.
+#
+#   watchers:
+#     - name: checkout-latency
+#       job:
+#         name: checkout-latency
+#         bucket_span: 1m
+#         detectors: [{function: mean, field: value, side: high}]
+#       source:
+#         promUrl: http://prometheus:9090
+#         promQuery: 'histogram_quantile(0.95, rate(http_latency_bucket[5m]))'
+#       interval: 1m
+#       minScore: 60
+#       sinks:
+#         slackWebhookSecret: {name: semeion-slack, key: url}
+#         alertmanager: http://alertmanager:9093
+watchers: []
+
+# Optional Python model plane (scipy/statsmodels/prophet). When disabled the Go
+# engine uses its built-in provider — every feature still works, just with the
+# pure-Go implementations.
+modelPlane:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/urfan03/semeion-model
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8899
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi

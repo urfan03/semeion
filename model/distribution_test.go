@@ -19,16 +19,12 @@ func TestFitNormalAndTail(t *testing.T) {
 
 func TestExponentialTailSideAware(t *testing.T) {
 	d := Distribution{Family: "exponential", Params: []float64{1}}
-	// The mode is at 0: by default (both) a near-zero value is the MOST typical,
-	// not anomalous — only large x is (upper tail).
 	if p := d.Tail(0, "both"); p < 0.5 {
 		t.Fatalf("x=0 is the exponential mode; must not be extreme under both, got %.3f", p)
 	}
 	if p := d.Tail(10, "both"); p > 0.01 {
 		t.Fatalf("large x must be extreme, got %.4f", p)
 	}
-	// SideLow explicitly cares about drops → a throughput collapse to ~0 is
-	// extreme on the lower tail.
 	if p := d.Tail(0, "low"); p > 0.05 {
 		t.Fatalf("x=0 must be extreme when SideLow (outage), got %.3f", p)
 	}

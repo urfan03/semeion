@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -110,6 +111,10 @@ func (s *Server) appendSLO(w http.ResponseWriter, r *http.Request, name string) 
 		return
 	}
 	series := s.sloSeries(name, true)
+	if series == nil {
+		httpError(w, http.StatusTooManyRequests, fmt.Sprintf("SLO series limit reached (%d)", maxSLOSeries))
+		return
+	}
 	series.mu.Lock()
 	if req.Objective > 0 {
 		series.Target.Objective = req.Objective
@@ -130,6 +135,9 @@ func (s *Server) sloSeries(name string, create bool) *sloSeries {
 	}
 	series := s.slos[name]
 	if series == nil && create {
+		if len(s.slos) >= maxSLOSeries {
+			return nil
+		}
 		series = &sloSeries{}
 		s.slos[name] = series
 	}

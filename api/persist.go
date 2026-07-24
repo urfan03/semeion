@@ -97,13 +97,25 @@ func (s *Server) Restore(st ServerState) error {
 
 	s.mu.Lock()
 	s.changes = append([]correlate.Change(nil), st.Changes...)
+	if len(s.changes) > maxChanges {
+		s.changes = s.changes[len(s.changes)-maxChanges:]
+	}
 	s.slos = map[string]*sloSeries{}
 	for name, snap := range st.SLOs {
+		if len(s.slos) >= maxSLOSeries {
+			break
+		}
 		s.slos[name] = &sloSeries{Target: snap.Target, samples: snap.Samples}
 	}
 	s.mu.Unlock()
 
 	for _, snap := range st.LiveJobs {
+		s.mu.RLock()
+		atCap := len(s.live) >= maxLiveJobsCount
+		s.mu.RUnlock()
+		if atCap {
+			break
+		}
 		lj := &liveJob{
 			Name: snap.Name, Metric: snap.Metric, Threshold: snap.Threshold, Logs: snap.Logs,
 			Spec: snap.Spec, Points: snap.Points, Created: snap.Created, Last: snap.Last,

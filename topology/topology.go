@@ -26,10 +26,11 @@ type Graph struct {
 
 	MaxSamples int
 
-	spans    map[string]spanMeta
-	orphans  map[string][]spanMeta
-	spanFIFO []string
-	MaxSpans int
+	spans       map[string]spanMeta
+	orphans     map[string][]spanMeta
+	orphanCount int
+	spanFIFO    []string
+	MaxSpans    int
 }
 
 type spanMeta struct {
@@ -123,6 +124,7 @@ func (g *Graph) Observe(spans []otlp.Span) {
 			for _, kid := range kids {
 				g.addEdge(self.service, kid)
 			}
+			g.orphanCount -= len(kids)
 			delete(g.orphans, id)
 		}
 
@@ -135,6 +137,7 @@ func (g *Graph) Observe(spans []otlp.Span) {
 		} else {
 
 			g.orphans[pid] = append(g.orphans[pid], self)
+			g.orphanCount++
 			g.trimOrphans()
 		}
 	}
@@ -183,13 +186,10 @@ func (g *Graph) trimOrphans() {
 	if max <= 0 {
 		max = 200_000
 	}
-	if len(g.orphans) <= max {
-		return
-	}
-
-	for k := range g.orphans {
-		delete(g.orphans, k)
-		if len(g.orphans) <= max*3/4 {
+	for g.orphanCount > max && len(g.orphans) > 0 {
+		for k, v := range g.orphans {
+			g.orphanCount -= len(v)
+			delete(g.orphans, k)
 			break
 		}
 	}

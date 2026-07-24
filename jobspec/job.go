@@ -62,16 +62,11 @@ type Calendar struct {
 	Name  string    `json:"name,omitempty" yaml:"name,omitempty"`
 	Start time.Time `json:"start"          yaml:"start"`
 	End   time.Time `json:"end"            yaml:"end"`
-	// RecurWeekly makes this a recurring weekly event: only the weekday-of-week
-	// and time-of-day of [Start,End) are matched, on every week (a maintenance
-	// window every Sunday 02:00-03:00). RecurDaily matches the time-of-day every
-	// day. Both compare in UTC. When neither is set the window is one-shot.
+
 	RecurWeekly bool `json:"recur_weekly,omitempty" yaml:"recur_weekly,omitempty"`
 	RecurDaily  bool `json:"recur_daily,omitempty"  yaml:"recur_daily,omitempty"`
 }
 
-// Covers reports whether t falls inside this calendar window, honouring weekly or
-// daily recurrence.
 func (c Calendar) Covers(t time.Time) bool {
 	if c.End.Before(c.Start) || c.End.Equal(c.Start) {
 		return false
@@ -123,10 +118,7 @@ type Rule struct {
 	SkipWeekdaysUTC []int `json:"skip_weekdays_utc,omitempty" yaml:"skip_weekdays_utc,omitempty"`
 
 	SkipInfluencer map[string][]string `json:"skip_influencer,omitempty" yaml:"skip_influencer,omitempty"`
-	// SkipModelUpdate stops a matching bucket from being LEARNED into the baseline
-	// (Elastic ML's skip_model_update action) — the anomaly is still reported, but
-	// the outlier value doesn't pollute the model. Applies to the plain temporal
-	// path.
+
 	SkipModelUpdate bool `json:"skip_model_update,omitempty" yaml:"skip_model_update,omitempty"`
 }
 
@@ -169,7 +161,7 @@ func (d Detector) CountsEmptyAsZero() bool {
 		return false
 	}
 	switch d.Function {
-	case FuncCount, FuncNonZeroCount, FuncDistinctCount:
+	case FuncCount, FuncDistinctCount:
 		return true
 	case FuncRate:
 		return d.Field == ""
@@ -177,9 +169,6 @@ func (d Detector) CountsEmptyAsZero() bool {
 	return false
 }
 
-// CountFamilySplit reports a count-family detector split by a by/partition field:
-// each distinct split value is zero-filled when it produces no events in a bucket
-// (a per-partition drop to zero is a real signal), matching Elastic ML.
 func (d Detector) CountFamilySplit() bool {
 	if d.OverField != "" || d.IsMultivariate() {
 		return false
@@ -188,7 +177,7 @@ func (d Detector) CountFamilySplit() bool {
 		return false
 	}
 	switch d.Function {
-	case FuncCount, FuncNonZeroCount, FuncDistinctCount:
+	case FuncCount, FuncDistinctCount:
 		return true
 	}
 	return false

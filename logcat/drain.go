@@ -7,6 +7,8 @@ import (
 
 const wildcard = "<*>"
 
+const defaultMaxClusters = 5000
+
 type Cluster struct {
 	ID     int      `json:"id"`
 	Tokens []string `json:"tokens"`
@@ -23,9 +25,10 @@ type node struct {
 func newNode() *node { return &node{children: make(map[string]*node)} }
 
 type Drain struct {
-	maxDepth int
-	simTh    float64
-	maxChild int
+	maxDepth    int
+	simTh       float64
+	maxChild    int
+	maxClusters int
 
 	root     map[int]*node
 	clusters []*Cluster
@@ -40,10 +43,11 @@ type mask struct {
 
 func NewDrain() *Drain {
 	return &Drain{
-		maxDepth: 4,
-		simTh:    0.4,
-		maxChild: 100,
-		root:     make(map[int]*node),
+		maxDepth:    4,
+		simTh:       0.4,
+		maxChild:    100,
+		maxClusters: defaultMaxClusters,
+		root:        make(map[int]*node),
 		masks: []mask{
 			{regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`), wildcard},
 			{regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`), wildcard},
@@ -78,11 +82,33 @@ func (d *Drain) Match(msg string) *Cluster {
 		best.Count++
 		return best
 	}
+	if d.maxClusters > 0 && len(d.clusters) >= d.maxClusters {
+		if fb := closest(leaf.clusters, tokens); fb != nil {
+			d.refine(fb, tokens)
+			fb.Count++
+			return fb
+		}
+		return nil
+	}
 	d.nextID++
 	c := &Cluster{ID: d.nextID, Tokens: append([]string(nil), tokens...), Count: 1}
 	leaf.clusters = append(leaf.clusters, c)
 	d.clusters = append(d.clusters, c)
 	return c
+}
+
+func closest(clusters []*Cluster, tokens []string) *Cluster {
+	var best *Cluster
+	bestSim := -1.0
+	for _, c := range clusters {
+		if len(c.Tokens) != len(tokens) {
+			continue
+		}
+		if sim := seqSim(c.Tokens, tokens); sim > bestSim {
+			bestSim, best = sim, c
+		}
+	}
+	return best
 }
 
 func (d *Drain) descend(tokens []string, create bool) *node {

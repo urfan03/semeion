@@ -204,7 +204,7 @@ func (p *pbReader) bytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.pos+int(n) > len(p.buf) {
+	if n > uint64(len(p.buf)-p.pos) {
 		return nil, fmt.Errorf("protobuf: length-delimited field truncated")
 	}
 	b := p.buf[p.pos : p.pos+int(n)]

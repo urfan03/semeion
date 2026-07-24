@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/urfan03/semeion/core"
@@ -972,6 +973,15 @@ func (e *Engine) dropSeries(key string) {
 	delete(e.geo, key)
 	delete(e.seriesScores, key)
 	delete(e.lastSeen, key)
+	for detID, set := range e.countSeries {
+		prefix := detID + "|"
+		if strings.HasPrefix(key, prefix) {
+			delete(set, key[len(prefix):])
+			if len(set) == 0 {
+				delete(e.countSeries, detID)
+			}
+		}
+	}
 	e.Evicted++
 }
 
@@ -1025,7 +1035,7 @@ func addRec(br *core.BucketResult, r core.Record) {
 func RenormalizeResults(results []core.BucketResult) {
 	const fullScale = 12.0
 	sevOf := func(p float64) float64 {
-		if p <= 0 {
+		if p < 1e-12 {
 			return fullScale
 		}
 		return -math.Log10(p)

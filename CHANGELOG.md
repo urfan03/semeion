@@ -4,6 +4,65 @@ All notable changes to semeion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+Production-readiness hardening. A four-agent audit (quality gate, server
+security/concurrency, algorithmic correctness, deploy/integration) drove this
+release; every confirmed finding is fixed with a regression test and all 22
+packages are green.
+
+### Correctness
+- **Renormalization ranking fix**: `RenormalizeResults` now gives `sevOf` the
+  same `1e-12` probability floor that `probFromScore`/`Ensemble` already use, so
+  a maximally-extreme anomaly whose tail probability underflowed to 0 can no
+  longer be renormalized *below* a less-extreme one on the opt-in `renormalize`
+  path.
+- **Dead-series pruning**: an evicted count-family-split series is now removed
+  from the zero-fill tracker, so `MaxSeries` eviction is no longer undone by the
+  series being resurrected — and re-alerted as a drop-to-zero — every bucket.
+- **Granger stability**: lead-lag causality standardizes both series before the
+  OLS, so the ridge no longer crushes genuine but tiny-magnitude coefficients.
+  The improvement/F statistics are scale-invariant, so well-scaled inputs are
+  unchanged.
+- **Restore guards**: `warmup <= 0` from a crafted snapshot falls back to the
+  default instead of reaching the models with zero history; `non_zero_count` no
+  longer advertises a zero-fill it never performed (empty buckets stay null,
+  matching Elastic).
+
+### Server hardening
+- **Bounded forecast horizon** (reject > 10000), so a crafted `horizon` can no
+  longer force a multi-GB band allocation.
+- **Bounded lead/lag** — `/v1/leadlag` rejects `max_lag > 1000` and `order > 100`
+  (previously only the lower bound was clamped, so a ~40-byte request could force
+  a multi-GB/TB allocation via `CrossCorrelation`/`Granger` → OOM).
+- **Input-length cap** (100000) on the `series` accepted by the forecast,
+  changepoints and lead/lag endpoints, bounding worst-case compute.
+- **Bounded `/v1/correlate`** (symptoms ≤ 50000, changes ≤ 1000) — closes an
+  O(n²) symptom-grouping CPU DoS; **bounded `/v1/outliers`** `k` (≤ 200) —
+  closes an `n×k` OOM and O(k²) blow-up.
+- **Bounded topology orphan spans** — the trace-correlation graph now caps the
+  *total* number of unresolved (orphan) spans, not just the number of keys, so a
+  stream of children whose parent never arrives can no longer grow memory
+  without bound (previously reachable via `/v1/otlp/v1/traces`).
+- **Bounded log categories** — the Drain log-template tree caps total clusters
+  (5000), so high-cardinality/random log lines can no longer create unlimited
+  templates; overflow lines fold into the nearest existing template.
+- **Remote-write protobuf** rejects a length-delimited field whose length prefix
+  overflows `int` (bit 63 set) with a clean error instead of a slice-bounds
+  panic; `/v1/incidents` now requires GET.
+- **Entity caps** on live jobs, stored results, SLO series and forecasts — a
+  stream of unique names can no longer grow server memory without bound; the
+  snapshot-restore path enforces the same caps.
+- **Request timeouts** (read/write/idle) on the serve path (slow-client
+  protection), a panic-recovery middleware that returns a clean 500, a generic
+  history-read error (no path leak), and a loud startup warning when the API is
+  served without an auth token.
+
+### Deploy
+- The Helm chart passes `--demo=false` by default and pins its appVersion to the
+  release; CI builds the Docker image on every push and pushes it to GHCR on
+  version tags, so `image.tag` resolves to a published image.
+
 ## [0.5.0]
 
 A precision-and-correctness hardening pass — measuring, proving, and fixing

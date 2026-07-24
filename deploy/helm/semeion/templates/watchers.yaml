@@ -1,0 +1,121 @@
+{{- range .Values.watchers }}
+{{- $w := . }}
+{{- $name := printf "%s-watch-%s" (include "semeion.fullname" $) $w.name | trunc 63 | trimSuffix "-" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "semeion.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: watcher
+data:
+  job.json: |
+    {{- toJson $w.job | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "semeion.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: watcher
+spec:
+  # A watcher owns in-memory baselines for its job — never scale it past one.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "semeion.selectorLabels" $ | nindent 6 }}
+      semeion.io/watcher: {{ $w.name }}
+  template:
+    metadata:
+      annotations:
+        # Restart the watcher when its job definition changes.
+        checksum/job: {{ toJson $w.job | sha256sum }}
+      labels:
+        {{- include "semeion.selectorLabels" $ | nindent 8 }}
+        semeion.io/watcher: {{ $w.name }}
+        app.kubernetes.io/component: watcher
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: watch
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - watch
+            - --job=/etc/semeion/job.json
+            {{- with $w.source.promUrl }}
+            - --prom-url={{ . }}
+            - --prom-query={{ $w.source.promQuery }}
+            {{- end }}
+            {{- with $w.source.esUrl }}
+            - --es-url={{ . }}
+            - --es-index={{ $w.source.esIndex }}
+            {{- with $w.source.esTimeField }}
+            - --es-time-field={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- with $w.source.chUrl }}
+            - --ch-url={{ . }}
+            - --ch-query={{ $w.source.chQuery }}
+            {{- end }}
+            {{- with $w.interval }}
+            - --interval={{ . }}
+            {{- end }}
+            {{- with $w.lookback }}
+            - --lookback={{ . }}
+            {{- end }}
+            {{- with $w.threshold }}
+            - --threshold={{ . }}
+            {{- end }}
+            {{- with $w.minScore }}
+            - --min-score={{ . }}
+            {{- end }}
+            {{- with $w.dedup }}
+            - --dedup={{ . }}
+            {{- end }}
+            {{- with $w.sinks }}
+            {{- with .webhook }}
+            - --webhook={{ . }}
+            {{- end }}
+            {{- with .alertmanager }}
+            - --alertmanager={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- if $.Values.modelPlane.enabled }}
+            - --model-url={{ include "semeion.modelURL" $ }}
+            {{- end }}
+          {{- if and $w.sinks $w.sinks.slackWebhookSecret }}
+          # The Slack URL is a credential, so it stays a Secret-backed env var —
+          # `watch` reads $SEMEION_SLACK_WEBHOOK when the flag is absent, keeping
+          # it out of the pod spec (and out of `kubectl get deploy -o yaml`).
+          env:
+            - name: SEMEION_SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $w.sinks.slackWebhookSecret.name }}
+                  key: {{ $w.sinks.slackWebhookSecret.key }}
+          {{- end }}
+          volumeMounts:
+            - name: job
+              mountPath: /etc/semeion
+              readOnly: true
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+      volumes:
+        - name: job
+          configMap:
+            name: {{ $name }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{- end }}

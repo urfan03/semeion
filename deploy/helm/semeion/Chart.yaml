@@ -1,0 +1,15 @@
+apiVersion: v2
+name: semeion
+description: Open-source anomaly detection & correlation engine (the free alternative to Elastic ML)
+type: application
+version: 0.9.0
+appVersion: "0.9.0"
+home: https://github.com/urfan03/semeion
+sources:
+  - https://github.com/urfan03/semeion
+keywords:
+  - anomaly-detection
+  - observability
+  - aiops
+  - elasticsearch
+  - prometheus

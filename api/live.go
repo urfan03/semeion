@@ -81,6 +81,10 @@ func (s *Server) RegisterJob(req liveJobRequest) (*liveJob, error) {
 	if s.live == nil {
 		s.live = map[string]*liveJob{}
 	}
+	if _, exists := s.live[lj.Name]; !exists && len(s.live) >= maxLiveJobsCount {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("live job limit reached (%d)", maxLiveJobsCount)
+	}
 	s.live[lj.Name] = lj
 	delete(s.results, lj.Name)
 	s.mu.Unlock()

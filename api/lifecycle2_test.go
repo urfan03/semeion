@@ -32,7 +32,6 @@ func TestForecastLifecycle(t *testing.T) {
 		t.Fatalf("get forecast: %d", w.Code)
 	}
 
-	// Overwrite: a second forecast for the same job replaces the first.
 	do(t, h, http.MethodPost, "/v1/forecasts", body)
 	w = do(t, h, http.MethodGet, "/v1/forecasts", "")
 	var list struct {
@@ -43,7 +42,6 @@ func TestForecastLifecycle(t *testing.T) {
 		t.Fatalf("same-job forecast should overwrite, got %d active", len(list.Forecasts))
 	}
 
-	// The first id is gone after overwrite.
 	if w := do(t, h, http.MethodGet, "/v1/forecasts/"+fc.ID, ""); w.Code != http.StatusNotFound {
 		t.Fatalf("overwritten forecast id should be gone, got %d", w.Code)
 	}

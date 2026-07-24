@@ -334,7 +334,7 @@ func ModelFromState(s ModelState) *Model {
 	if s.Window <= 0 {
 		s.Window = defaultWindow
 	}
-	if s.Warmup < 0 {
+	if s.Warmup <= 0 {
 		s.Warmup = defaultWarmup
 	}
 	if s.MBWindow <= 0 {

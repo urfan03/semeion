@@ -9,6 +9,8 @@ import (
 	"github.com/urfan03/semeion/outlier"
 )
 
+const maxOutlierK = 200
+
 type outlierRequest struct {
 	Rows []map[string]any `json:"rows"`
 
@@ -43,6 +45,10 @@ func (s *Server) handleOutliers(w http.ResponseWriter, r *http.Request) {
 	var req outlierRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if req.K > maxOutlierK {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("k exceeds max %d", maxOutlierK))
 		return
 	}
 

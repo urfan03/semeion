@@ -2,7 +2,7 @@
 /bin/
 *.exe
 *.out
-semeion
+/semeion
 
 # Test / coverage
 *.test

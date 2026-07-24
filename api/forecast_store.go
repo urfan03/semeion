@@ -27,18 +27,24 @@ type forecastStore struct {
 	seq   int64
 }
 
-func (fs *forecastStore) put(f storedForecast) {
+func (fs *forecastStore) put(f storedForecast) bool {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	if fs.items == nil {
 		fs.items = map[string]storedForecast{}
 	}
+	sameJob := false
 	for id, ex := range fs.items {
 		if ex.Job == f.Job {
 			delete(fs.items, id)
+			sameJob = true
 		}
 	}
+	if !sameJob && len(fs.items) >= maxForecasts {
+		return false
+	}
 	fs.items[f.ID] = f
+	return true
 }
 
 func (fs *forecastStore) nextID(job string) string {
@@ -129,6 +135,14 @@ func (s *Server) createForecast(w http.ResponseWriter, r *http.Request) {
 	if req.Horizon <= 0 {
 		req.Horizon = 12
 	}
+	if req.Horizon > maxForecastHorizon {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("horizon exceeds max %d", maxForecastHorizon))
+		return
+	}
+	if len(req.Series) > maxSeriesLen {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("series exceeds max length %d", maxSeriesLen))
+		return
+	}
 	ttl := 14 * 24 * time.Hour
 	if req.ExpiresIn != "" {
 		if d, err := time.ParseDuration(req.ExpiresIn); err == nil && d > 0 {
@@ -144,7 +158,10 @@ func (s *Server) createForecast(w http.ResponseWriter, r *http.Request) {
 		Created: now,
 		Expires: now.Add(ttl),
 	}
-	s.forecasts.put(f)
+	if !s.forecasts.put(f) {
+		httpError(w, http.StatusTooManyRequests, fmt.Sprintf("forecast limit reached (%d)", maxForecasts))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(f)
