@@ -36,3 +36,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "semeion.modelURL" -}}
 {{- printf "http://%s:%d" (include "semeion.modelPlaneFullname" .) (int .Values.modelPlane.port) -}}
 {{- end -}}
+
+{{/*
+Name of the Secret holding the API bearer token. Either an existing Secret the
+operator manages, or one this chart renders from auth.token.
+*/}}
+{{- define "semeion.authSecretName" -}}
+{{- if .Values.auth.existingSecret -}}
+{{- .Values.auth.existingSecret -}}
+{{- else -}}
+{{- printf "%s-auth" (include "semeion.fullname" .) -}}
+{{- end -}}
+{{- end -}}

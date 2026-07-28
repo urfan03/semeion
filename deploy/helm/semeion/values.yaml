@@ -26,6 +26,26 @@ fullnameOverride: ""
 # deployments; the binary's own default is on (for `semeion serve` first-run).
 demo: false
 
+# API authentication. The token is a shared secret YOU choose — there is no
+# registration or issuing flow. Generate one with `openssl rand -hex 32` and
+# give the same value to every client (AccelerUp reads it as SEMEION_TOKEN).
+#
+# Without it, anyone who can reach the Service has full API access, so leaving
+# this off is only reasonable on a cluster-internal ClusterIP with a network
+# policy in front of it.
+#
+# Prefer existingSecret in production: auth.token lands in your values file and
+# in Helm's release history, which is usually not where you want a credential.
+#   auth:
+#     enabled: true
+#     existingSecret: semeion-api-token   # managed by Vault / External Secrets
+#     secretKey: token
+auth:
+  enabled: false
+  token: ""
+  existingSecret: ""
+  secretKey: token
+
 # Extra args appended after `serve --addr=:8080`.
 extraArgs: []
 

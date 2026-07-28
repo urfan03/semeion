@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/changepoints", s.handleChangePoints)
 	mux.HandleFunc("/v1/leadlag", s.handleLeadLag)
 	mux.HandleFunc("/v1/outliers", s.handleOutliers)
+	mux.HandleFunc("/v1/detect", s.handleDetect)
 	mux.HandleFunc("/v1/incidents", s.handleIncidents)
 	mux.HandleFunc("/v1/incidents/", s.handleIncidents)
 	mux.HandleFunc("/v1/correlate", s.handleCorrelate)

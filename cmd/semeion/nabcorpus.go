@@ -157,6 +157,9 @@ func runNABCorpus(args []string) error {
 	full := fs.Bool("full-metrics", true, "also compute PA%K, range-F1, VUS and a fixed EVT operating point")
 	policy := fs.String("policy", "", "alarm policy for the event-level report: sensitive, balanced, precise, paranoid")
 	q := fs.Float64("q", 1e-3, "EVT tail probability for the alarm threshold")
+	audit := fs.String("audit", "", "write a JSON audit of the strongest alarms to this file for label review")
+	auditFalse := fs.Bool("audit-false-only", true, "audit only the alarms that fell outside a labelled window")
+	auditLimit := fs.Int("audit-limit", 50, "how many alarms to include in the audit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -242,6 +245,34 @@ func runNABCorpus(args []string) error {
 		fmt.Printf("  alarm precision     %.4f (%d alarms, %d outside a window)\n", op.AlarmPrecision, op.Alarms, op.FalseAlarms)
 		fmt.Printf("  event F1            %.4f\n", op.F1)
 		fmt.Printf("  alarm volume        %.2f per series\n", op.AlarmsPerSerie)
+	}
+
+	if *audit != "" {
+		opt := guard.Sensitive()
+		if *policy != "" {
+			opt = guard.Presets()[*policy]
+		}
+		entries := benchmark.Audit(series, fn, benchmark.AuditOptions{
+			Threshold: corpusThresholdAt(*q),
+			Policy:    opt,
+			Gap:       10,
+			Limit:     *auditLimit,
+			FalseOnly: *auditFalse,
+		})
+		f, err := os.Create(*audit)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := benchmark.WriteAudit(f, entries); err != nil {
+			return err
+		}
+		byShape := map[string]int{}
+		for _, e := range entries {
+			byShape[string(e.Shape)]++
+		}
+		fmt.Printf("\nwrote %d alarms to %s for review\n", len(entries), *audit)
+		fmt.Printf("  shapes: %v\n", byShape)
 	}
 	return nil
 }

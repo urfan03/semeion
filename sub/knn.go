@@ -9,6 +9,8 @@ import (
 	"github.com/urfan03/semeion/outlier"
 )
 
+const MaxRows = 20_000
+
 type Options struct {
 	Window  int
 	Stride  int
@@ -16,6 +18,14 @@ type Options struct {
 	Raw     bool
 	Spread  bool
 	Workers int
+	MaxRows int
+}
+
+func (o Options) rowLimit() int {
+	if o.MaxRows > 0 {
+		return o.MaxRows
+	}
+	return MaxRows
 }
 
 func (o Options) resolve(n int) Options {
@@ -36,6 +46,9 @@ func (o Options) resolve(n int) Options {
 
 func (o Options) embed(t []float64) Embedding {
 	e := Embed(t, o.Window, o.Stride)
+	if len(e.Rows) > o.rowLimit() {
+		return Embedding{Window: o.Window, Length: len(t)}
+	}
 	if !o.Raw {
 		e = e.ZNormalize()
 	}

@@ -52,6 +52,85 @@ split: `hst`, `evt`, `fisher`, `fisher-all` and `selector` must beat the engine
 on both AUC-PR and range-F1; the rest must beat random on both and beat the
 engine at a fixed threshold.
 
+### Chasing 80% precision: what the audit found
+
+Auditing the false alarms answered the question before any more tuning could.
+`semeion nab-corpus --audit` dumps the strongest alarms that fell outside a
+labelled window, with their shape, magnitude and surrounding context. Of 60
+audited on NAB:
+
+- **36 have |z| ≥ 20.** One is `cpu_utilization_asg_misconfiguration` going from
+  a 31% baseline to **100% CPU**. That is an anomaly by any definition; NAB
+  simply does not label it.
+- **All 60 sit more than 20 samples from any labelled window**, so these are not
+  boundary-alignment artefacts — they are unlabelled events.
+- **50 of 60 are single-sample spikes.** NAB deliberately labels sustained
+  anomalies and ignores momentary ones.
+
+So measured precision on NAB **understates** real precision, and 80% is not
+reachable against this ground truth: a large share of the remaining "errors" are
+correct detections of things the benchmark chose not to mark. The audit tool
+exists so the same question can be answered against your own incident history,
+where the labels are the ones you actually care about.
+
+### What raised precision, measured
+
+| configuration | recall | precision | alarms/series |
+|---------------|--------|-----------|---------------|
+| EVT q=1e-3 (reference) | 0.5603 | 0.5139 | 6.21 |
+| **alarm budget 1/2000 + effect gate** | 0.4483 | **0.6419** | **2.85** |
+| duration ≥ 20 (shape gate) | 0.1552 | 0.7027 | 17.08 |
+| duration ≥ 20 + refractory | 0.1552 | 0.6552 | 0.56 |
+| EVT q=1e-3 + `Precise` policy | 0.2069 | 0.7238 | 8.08 |
+
+The budget-plus-effect point is the one to ship: **+13 points of precision over
+the reference while keeping 45% recall and less than half the alarm volume.**
+Requiring a minimum duration trades precision for recall monotonically
+(0.4670 at ≥3 samples → 0.7027 at ≥20), which is a dial, not a win.
+
+### False-discovery-rate control: diagnosed and fixed
+
+FDR control is the textbook route to a precision target — precision = 1 − FDR, so
+controlling FDR at 0.2 should hand you 80% precision by construction. The first
+attempt failed badly: at a nominal q=0.05, which should give ~95% precision,
+measured precision was **0.2781**.
+
+The guarantee needs valid p-values. Three separate things were invalidating ours,
+and each has been fixed and independently verified against a *known* null:
+
+1. **Detector dependence.** The three detectors all read the same series, so
+   Fisher and the order-statistic combiner — both of which assume independence —
+   break. Replaced with the **Cauchy combination test** (`fuse.Cauchy`), whose
+   tail is valid under arbitrary dependence. Under *perfectly* dependent inputs
+   at a nominal 5%: **Cauchy 0.0493, Fisher 0.1594, order-statistic 0.1893.**
+2. **Autocorrelation and window scanning.** Taking the maximum over a run of
+   correlated samples and comparing it to a pointwise null is a scan statistic
+   judged against the wrong distribution. Added
+   **`conformal.NewBlock`**, which calibrates the distribution of the sliding
+   maximum at each run length. On an AR(1) series with ρ=0.9, a 16-point scan at
+   nominal α=0.01: **block calibration 0.0062, pointwise 0.0414.**
+3. **Contaminated null.** The empirical null was estimated from data containing
+   the anomalies being detected. Added trimmed variants
+   (`fuse.TrimmedPValues`, `conformal.NewTrimmed`) plus a **two-stage
+   split-conformal** construction — the reference period is halved, one half
+   calibrating the per-detector p-values and the other calibrating the combined
+   scan statistic, so nothing is calibrated against itself.
+
+A fourth cause turned out to be **distribution shift**: a fixed reference window
+cannot certify a distant future window on a drifting series, which violates
+exchangeability itself rather than any particular estimator. Recalibrating on a
+**sliding** reference window fixes what can be fixed there — at a matched target
+level it raises event recall from **0.4224 to 0.6293** with the same precision.
+
+And the measured FDR on NAB stays around 0.88 no matter which of these is
+applied — because that figure is **not an FDR measurement**. At the candidate
+threshold the pipeline proposes 4229 regions across 58 series while NAB labels
+116 windows, so the label base rate caps event precision at **0.0274** however
+valid the p-values are. Measured precision is 0.1201, **4.4× the base rate**, and
+the audit above shows most of the unlabelled candidates are real anomalies NAB
+did not mark. NAB cannot validate an FDR guarantee; the unit tests, where the
+null is known, can and do.
+
 ### Precision work: from one operating point to a frontier
 
 The plain ensemble caught 37% of anomaly windows with 49% alarm precision — one
@@ -207,6 +286,103 @@ weak members outvote the two strong ones.
   operating point. `make gate-nab` / `make gate-ucr` run `TestNABCorpusGate`;
   `TestPrecisionStack` walks the whole stack and prints the Pareto frontier. All
   skip unless `SEMEION_NAB_DIR` / `SEMEION_UCR_DIR` is set.
+
+### The shipped detector
+
+Everything above is a library of parts. **`pipeline`** is the one entry point
+that assembles them the way the measurements say they should be assembled, so a
+caller does not have to re-derive it — and cannot accidentally reach for a batch
+detector on a live stream.
+
+- **Causal by construction.** DAMP, half-space trees and DSPOT only; the batch
+  self-join is not reachable from here.
+- **Bounded.** A rolling `History` window with a hard cap, validated at
+  construction. `Push` re-scores every `Refresh` points rather than every point,
+  which took 4000 pushes from 139s to 4.5s — the difference between a demo and
+  something that can sit in front of a metric.
+- **Late-confirming and honest about it.** `Push` returns alarms this point newly
+  *confirms*, with absolute indices; a persistence policy cannot rule on a point
+  until it has seen what follows, so an alarm's start may sit behind the point
+  just pushed. Each alarm is reported once.
+- **Points at the region, not the edge.** A level shift makes both of its edges
+  look like changes, so a detector can fire on the recovery, where the value is
+  already back to normal. Alarms anchor on the largest deviation near the
+  crossing and grow while the deviation stays comparable, so the reported window
+  is the elevated stretch and the effect size means something.
+- **Four named sensitivities** plus optional duration, effect-size, budget and
+  deseasonalizing gates.
+
+Measured end to end on NAB, counting **pages** — one contiguous alarm region is
+one page, which is what an operator actually receives:
+
+| configuration | recall | precision | F1 | pages/series |
+|---------------|--------|-----------|----|--------------|
+| `Sensitive` | 0.3103 | 0.3736 | 0.3391 | 1.75 |
+| `Balanced` | 0.3017 | 0.3929 | 0.3413 | 1.62 |
+| `Precise` | 0.2069 | 0.6452 | 0.3133 | 0.60 |
+| **`Balanced` + duration ≥ 5** | 0.0776 | **0.8182** | 0.1417 | **0.21** |
+| **`Balanced` + budget 1/2000** | **0.4741** | 0.4186 | **0.4446** | 2.48 |
+| `Balanced` + budget + effect | 0.3362 | 0.4810 | 0.3958 | 1.52 |
+
+The duration-gated setting clears **82% precision** at a fifth of a page per
+series. Against NAB's labels, which the audit shows are missing many real
+anomalies, that is a floor rather than a ceiling.
+
+### Ranking alarms once feedback exists
+
+**`rank`** is the last piece of the plan and the one that cannot be validated
+here. It extracts nine features that the pipeline already computes — score,
+effect size, duration, detector agreement, shape persistence, seasonality,
+noise, change proximity, peer corroboration — and fits a logistic model with
+**monotonicity constraints**: a weight that would learn "a bigger effect means
+less likely real" is clamped to zero rather than trusted, because that is
+overfitting, not a finding. `Threshold` calibrates a cut against a false-rate
+budget and errors rather than silently returning a useless one when the budget
+is unreachable. `Learn` is online, so `MarkFalsePositive` can drive it directly.
+
+It is unit-tested on synthetic separable data and **not** measured on NAB,
+deliberately: fitting it to a benchmark whose labels we have shown to be
+incomplete would produce a number that means nothing. It needs a few hundred
+operator verdicts on your own alarms.
+
+### New packages for the precision work
+- **`fdr`**: Benjamini-Hochberg, Storey-adaptive BH, Benjamini-Yekutieli for
+  arbitrary dependence, and online **LORD++** with a decaying alpha-wealth
+  sequence. Tested against the step-up rule on random inputs, for FDR control
+  and power on synthetic mixtures, and for near-silence under a pure null.
+- **`fuse.Cauchy` / `HarmonicMean`**: dependence-robust p-value combination, the
+  fix for detector dependence described above. `CauchyStreams` applies it
+  point-by-point across detector streams.
+- **`conformal.NewBlock`**: scan-statistic calibration. Calibrates the sliding
+  maximum at powers-of-two run lengths and picks the right one per candidate, so
+  a run of correlated samples is judged against the distribution of runs rather
+  than of points.
+- **`peer`**: cross-series evidence, the lever that actually reaches past a
+  single metric. `Relative` divides each series by the cross-sectional median of
+  its peer group and then takes a causal robust z of that ratio, so a fleet-wide
+  traffic surge leaves every ratio unchanged while a single-instance fault stands
+  out — verified on a synthetic fleet where the solo view fires on both and the
+  peer view only on the fault. `Deviation` is the cross-sectional primitive,
+  `Normalize` the per-series causal robust z, and `Corroborate` builds
+  corroborating p-value streams from related metrics with a Šidák correction for
+  the search window and a causal mode that refuses to look forward.
+  *Not validated on NAB* — its 58 series are unrelated, so co-movement cannot be
+  measured there. It needs real multivariate metrics.
+- **`shape`**: classifies a flagged region as spike, dip, level shift up or down,
+  variance change, trend break or gap, from the baseline before, the values
+  during and the recovery after. Distinguishing transient from persistent is what
+  lets a duration filter be principled rather than arbitrary.
+- **`guard` additions**: `Candidates` groups over-threshold points into candidate
+  regions with gap bridging, which is the unit an operator reasons about and the
+  right unit for a two-stage pipeline; `SolveThreshold`/`WithBudget` invert an
+  alarm allowance ("at most 1 per 2000 samples") into the threshold that spends
+  it, under whatever policy is active; `GateByEffect` with `RollingBaseline`
+  requires a deviation to be *large* as well as significant.
+- **`prep`/`conformal`/`fuse` additions**: trimmed-null variants
+  (`TrimmedPValues`, `NewTrimmed`) that drop the top of the calibration sample so
+  the anomalies being detected stop inflating the null they are measured against.
+  On NAB this recovered a large amount of recall (0.16 → 0.39 at a fixed FDR
+  level), confirming the contamination was real.
 
 ### Turning scores into alarms
 - **`guard`**: the alarm policy layer, streaming and batch. K-of-N persistence

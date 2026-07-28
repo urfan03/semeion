@@ -32,6 +32,7 @@ func Fisher(pvals []float64) float64 {
 type Tail struct {
 	hist   []float64
 	warmup int
+	trim   float64
 }
 
 func NewTail(warmup int) *Tail {
@@ -41,11 +42,30 @@ func NewTail(warmup int) *Tail {
 	return &Tail{warmup: warmup}
 }
 
+func NewTrimmedTail(warmup int, trim float64) *Tail {
+	t := NewTail(warmup)
+	if trim > 0 && trim < 0.5 {
+		t.trim = trim
+	}
+	return t
+}
+
 func (t *Tail) Step(x float64) float64 {
 	p := 1.0
 	if len(t.hist) >= t.warmup && !math.IsNaN(x) {
-		ge := len(t.hist) - sort.SearchFloat64s(t.hist, x)
-		p = float64(1+ge) / float64(len(t.hist)+1)
+		n := len(t.hist)
+		keep := n
+		if t.trim > 0 {
+			keep = n - int(float64(n)*t.trim)
+			if keep < t.warmup {
+				keep = n
+			}
+		}
+		ge := keep - sort.SearchFloat64s(t.hist[:keep], x)
+		if ge < 0 {
+			ge = 0
+		}
+		p = float64(1+ge) / float64(keep+1)
 	}
 	if !math.IsNaN(x) && !math.IsInf(x, 0) {
 		i := sort.SearchFloat64s(t.hist, x)
@@ -59,8 +79,12 @@ func (t *Tail) Step(x float64) float64 {
 func (t *Tail) Len() int { return len(t.hist) }
 
 func PValues(scores []float64, warmup int) []float64 {
+	return TrimmedPValues(scores, warmup, 0)
+}
+
+func TrimmedPValues(scores []float64, warmup int, trim float64) []float64 {
 	out := make([]float64, len(scores))
-	tail := NewTail(warmup)
+	tail := NewTrimmedTail(warmup, trim)
 	for i, s := range scores {
 		out[i] = tail.Step(s)
 	}

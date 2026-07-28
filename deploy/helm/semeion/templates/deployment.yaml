@@ -40,6 +40,14 @@ spec:
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if .Values.auth.enabled }}
+          env:
+            - name: SEMEION_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "semeion.authSecretName" . }}
+                  key: {{ .Values.auth.secretKey }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

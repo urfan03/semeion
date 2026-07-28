@@ -13,6 +13,12 @@ type Operating struct {
 	F1             float64 `json:"f1"`
 	AlarmsPerSerie float64 `json:"alarms_per_series"`
 	Series         int     `json:"series"`
+
+	Regions         int     `json:"regions"`
+	FalseRegions    int     `json:"false_regions"`
+	RegionPrecision float64 `json:"region_precision"`
+	RegionF1        float64 `json:"region_f1"`
+	RegionsPerSerie float64 `json:"regions_per_series"`
 }
 
 func (o *Operating) finish() {
@@ -27,6 +33,13 @@ func (o *Operating) finish() {
 	}
 	if o.Series > 0 {
 		o.AlarmsPerSerie = float64(o.Alarms) / float64(o.Series)
+		o.RegionsPerSerie = float64(o.Regions) / float64(o.Series)
+	}
+	if o.Regions > 0 {
+		o.RegionPrecision = float64(o.Regions-o.FalseRegions) / float64(o.Regions)
+	}
+	if o.EventRecall+o.RegionPrecision > 0 {
+		o.RegionF1 = 2 * o.EventRecall * o.RegionPrecision / (o.EventRecall + o.RegionPrecision)
 	}
 }
 
@@ -65,6 +78,19 @@ func EventScore(series []CorpusSeries, fn ScoreFunc, alarm AlarmFunc, label stri
 			op.Alarms++
 			if !s.Labels[i] {
 				op.FalseAlarms++
+			}
+		}
+		for _, r := range Segments(pred) {
+			op.Regions++
+			real := false
+			for k := r[0]; k <= r[1] && k < len(s.Labels); k++ {
+				if s.Labels[k] {
+					real = true
+					break
+				}
+			}
+			if !real {
+				op.FalseRegions++
 			}
 		}
 	}

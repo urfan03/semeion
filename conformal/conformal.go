@@ -11,6 +11,10 @@ type Calibrator struct {
 }
 
 func New(calibration []float64, alpha float64) *Calibrator {
+	return NewTrimmed(calibration, alpha, 0)
+}
+
+func NewTrimmed(calibration []float64, alpha, trim float64) *Calibrator {
 	clean := make([]float64, 0, len(calibration))
 	for _, v := range calibration {
 		if !math.IsNaN(v) && !math.IsInf(v, 0) {
@@ -20,6 +24,12 @@ func New(calibration []float64, alpha float64) *Calibrator {
 	sort.Float64s(clean)
 	if alpha <= 0 || alpha >= 1 {
 		alpha = 0.01
+	}
+	if trim > 0 && trim < 0.5 {
+		keep := len(clean) - int(float64(len(clean))*trim)
+		if keep >= MinCalibration(alpha) && keep > 0 {
+			clean = clean[:keep]
+		}
 	}
 	return &Calibrator{cal: clean, alpha: alpha}
 }
