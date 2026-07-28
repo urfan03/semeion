@@ -109,6 +109,48 @@ func TestESParseSplit(t *testing.T) {
 	}
 }
 
+func TestESFetchCompositePaginates(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		aggs, _ := body["aggs"].(map[string]any)
+		series, _ := aggs["series"].(map[string]any)
+		if _, ok := series["composite"]; !ok {
+			t.Errorf("split fetch must use a composite aggregation")
+		}
+		page++
+		if page == 1 {
+			_, _ = w.Write([]byte(`{"aggregations":{"series":{"after_key":{"time":1767225900000,"term":"a"},"buckets":[
+				{"key":{"time":1767225600000,"term":"a"},"doc_count":10,"metric":{"value":120.5}},
+				{"key":{"time":1767225600000,"term":"b"},"doc_count":3,"metric":{"value":90}}
+			]}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"aggregations":{"series":{"buckets":[
+			{"key":{"time":1767225900000,"term":"a"},"doc_count":5,"metric":{"value":118}}
+		]}}}`))
+	}))
+	defer srv.Close()
+
+	src := NewESSource(srv.URL, "logs-*", "@timestamp", ESMetric{Func: "mean", Field: "lat"})
+	src.SplitField = "host"
+	pts, err := src.Fetch(context.Background(),
+		time.Unix(1767225600, 0), time.Unix(1767226200, 0), 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 3 {
+		t.Fatalf("composite must page through all buckets, got %d", len(pts))
+	}
+	if page < 2 {
+		t.Fatalf("expected after_key pagination (>=2 requests), got %d", page)
+	}
+	if pts[0].Fields["host"] != "a" || pts[0].Value != 120.5 {
+		t.Fatalf("first composite point wrong: %+v", pts[0])
+	}
+}
+
 func TestESBuildBodyHasTermsWhenSplit(t *testing.T) {
 	s := NewESSource("http://x", "i", "@timestamp", ESMetric{Func: "mean", Field: "lat"})
 	s.SplitField = "host"

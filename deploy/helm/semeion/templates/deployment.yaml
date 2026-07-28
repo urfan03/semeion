@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "semeion.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "semeion.selectorLabels" . | nindent 6 }}

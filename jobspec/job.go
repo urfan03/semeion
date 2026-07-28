@@ -120,6 +120,35 @@ type Rule struct {
 	SkipInfluencer map[string][]string `json:"skip_influencer,omitempty" yaml:"skip_influencer,omitempty"`
 
 	SkipModelUpdate bool `json:"skip_model_update,omitempty" yaml:"skip_model_update,omitempty"`
+
+	Scope []ScopeClause `json:"scope,omitempty" yaml:"scope,omitempty"`
+
+	ResolvedFilters map[string][]string `json:"-" yaml:"-"`
+}
+
+type ScopeClause struct {
+	Field    string `json:"field"     yaml:"field"`
+	FilterID string `json:"filter_id" yaml:"filter_id"`
+	Include  bool   `json:"include"   yaml:"include"`
+}
+
+func (r Rule) InScope(fields map[string]string) bool {
+	for _, sc := range r.Scope {
+		in := false
+		for _, v := range r.ResolvedFilters[sc.FilterID] {
+			if fields[sc.Field] == v {
+				in = true
+				break
+			}
+		}
+		if sc.Include && !in {
+			return false
+		}
+		if !sc.Include && in {
+			return false
+		}
+	}
+	return true
 }
 
 type Job struct {
@@ -131,6 +160,36 @@ type Job struct {
 	Groups      []string      `json:"groups,omitempty"      yaml:"groups,omitempty"`
 
 	Sensitivity float64 `json:"sensitivity,omitempty" yaml:"sensitivity,omitempty"`
+
+	AutoThreshold *AutoThreshold `json:"auto_threshold,omitempty" yaml:"auto_threshold,omitempty"`
+}
+
+type AutoThreshold struct {
+	Q           float64 `json:"q,omitempty"           yaml:"q,omitempty"`
+	Level       float64 `json:"level,omitempty"       yaml:"level,omitempty"`
+	Calibration int     `json:"calibration,omitempty" yaml:"calibration,omitempty"`
+	Min         float64 `json:"min,omitempty"         yaml:"min,omitempty"`
+	Max         float64 `json:"max,omitempty"         yaml:"max,omitempty"`
+}
+
+func (a *AutoThreshold) Normalized() AutoThreshold {
+	out := AutoThreshold{}
+	if a != nil {
+		out = *a
+	}
+	if out.Q <= 0 || out.Q >= 1 {
+		out.Q = 1e-4
+	}
+	if out.Level <= 0 || out.Level >= 1 {
+		out.Level = 0.98
+	}
+	if out.Calibration <= 0 {
+		out.Calibration = 200
+	}
+	if out.Max <= out.Min {
+		out.Min, out.Max = 0, 100
+	}
+	return out
 }
 
 func (j Job) InGroup(group string) bool {

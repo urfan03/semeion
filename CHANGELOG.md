@@ -4,6 +4,312 @@ All notable changes to semeion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Detection-accuracy work against the TSB-AD (NeurIPS'24) finding that simple
+statistical detectors beat deep networks on time-series anomaly detection.
+Everything here is additive and pure Go — new packages alongside the existing
+engine, whose behaviour is unchanged unless you opt in.
+
+### Read this before the numbers: point-adjusted F1 is not usable on NAB
+
+The corpus gate scores a **random number generator** alongside every detector.
+On NAB it reaches **PA-F1 = 0.9663** — higher than any real detector here. NAB's
+anomaly windows are wide enough that random noise touches every one of them, and
+point adjustment then credits the whole window. Kim et al. (AAAI'22) predicted
+exactly this; the gate now demonstrates it on our own corpus. VUS-PR is inflated
+the same way by its existence reward (random: 0.6115).
+
+So **PA-F1 and VUS-PR are reported but gate nothing**. The metrics that actually
+separate signal from noise on this corpus, and which the gate enforces, are
+range-F1 (Tatbul et al., NeurIPS'18), AUC-PR, and F1 at a **fixed** EVT-chosen
+operating point rather than an oracle per-series threshold.
+
+### Measured on NAB (58 series, 52 labelled)
+
+| detector          | AUC-PR | range-F1 | PA%20-F1 | fixed-F1 | *PA-F1* |
+|-------------------|--------|----------|----------|----------|---------|
+| random scorer     | 0.1022 | 0.2675   | 0.5141   | 0.1541   | *0.9663* |
+| existing engine   | 0.1773 | 0.3477   | 0.5387   | 0.0831   | *0.7366* |
+| `mp`              | 0.1112 | 0.3448   | 0.4870   | 0.3413   | *0.9432* |
+| `mp` DAMP         | 0.1108 | 0.3476   | 0.4954   | 0.3123   | *0.9480* |
+| `sub` KNN         | 0.1264 | 0.3969   | 0.4900   | 0.2726   | *0.9045* |
+| `sub` LOF         | 0.1142 | 0.3651   | 0.4902   | 0.3581   | *0.9219* |
+| `sub` PCA         | 0.1131 | 0.3305   | 0.4917   | 0.2276   | *0.9161* |
+| `sub` IForest     | 0.1179 | 0.3657   | 0.4891   | 0.3207   | *0.9249* |
+| `hst`             | 0.1934 | **0.5217** | 0.5840 | **0.5537** | *0.9355* |
+| `evt` DSPOT       | 0.1973 | 0.4489   | 0.6252   | 0.3354   | *0.9540* |
+| `selector`        | 0.1960 | 0.4789   | 0.6020   | 0.3958   | *0.9556* |
+| **Fisher(evt,mp,hst)** | **0.2027** | 0.5214 | **0.6443** | 0.4829 | *0.9662* |
+
+Honest reading of that table: only `hst`, `evt`, the Fisher ensemble and the
+selector beat the existing engine on AUC-PR. The matrix-profile and subsequence
+detectors land *below* the engine there — they are near-random at ranking the
+whole series, and only their extreme tail carries signal, which is why they
+still beat it by 3-4× at a fixed operating point and why they earn their place
+as ensemble inputs rather than as standalone replacements. The gate encodes that
+split: `hst`, `evt`, `fisher`, `fisher-all` and `selector` must beat the engine
+on both AUC-PR and range-F1; the rest must beat random on both and beat the
+engine at a fixed threshold.
+
+### Precision work: from one operating point to a frontier
+
+The plain ensemble caught 37% of anomaly windows with 49% alarm precision — one
+false page for every real one. Six additions move that from a single point to a
+frontier you can choose from. Measured event-level on NAB, all at the same
+EVT threshold (q=1e-3) with no alarm policy, so each row is the stage's own
+contribution:
+
+| stack | event recall | alarm precision | event F1 |
+|-------|--------------|-----------------|----------|
+| Fisher over raw values      | 0.3707 | 0.4905 | 0.4223 |
+| + deseasonalized input      | 0.4224 | 0.5000 | 0.4579 |
+| + calibrated agreement k=2  | 0.5603 | 0.5139 | **0.5361** |
+| + multi-scale DAMP          | 0.6207 | 0.4780 | 0.5401 |
+
+Layering the alarm policy on top gives 126 configurations, 13 of them on the
+Pareto frontier. The ones worth knowing:
+
+| what you want | configuration | recall | precision | alarms/series |
+|---------------|---------------|--------|-----------|---------------|
+| never page falsely | multi-scale k=3, q=1e-4, `Precise` | 0.0345 | **1.0000** | 0.6 |
+| very high precision | Fisher, q=1e-4, no policy | 0.1207 | 0.7895 | 0.7 |
+| high precision, usable recall | agreement k=2, q=1e-3, `Precise` | 0.2069 | 0.7238 | 8.1 |
+| best balance | multi-scale, q=1e-3, no policy | 0.6207 | 0.4780 | 6.6 |
+| catch almost everything | deseasonalized, q=1e-2, no policy | 0.8190 | 0.4141 | 74.1 |
+
+So precision at a *fixed* recall barely moved — the detectors were already near
+what NAB's labels support — but the reachable frontier widened enormously: 100%
+alarm precision is now an available setting, and 82% recall is too.
+
+Two things did not pay off, recorded so nobody re-tries them blind. **Conformal
+scoring never reached the frontier** on NAB: its p-values quantise at
+1/(n_cal+1), and stacking a distribution-free layer on an already-calibrated
+agreement score only coarsens it. Its value is the *guarantee* — a provable
+false-alarm rate — not a better NAB number, and on a corpus that labels whole
+windows the guarantee buys nothing. **Requiring all detectors to agree (k=3)
+is worse than a majority (k=2)** at every threshold: 0.4415 vs 0.5361 event F1.
+
+### What that means as an operating point
+
+Threshold metrics still hide the thing an operator asks for, so the runner also
+reports event recall and alarm precision. At the EVT-chosen threshold
+(q=1e-3) over the 52 labelled series (~365k points, 116 anomaly windows):
+
+| detector | anomaly windows caught | alarms raised | alarm precision |
+|----------|------------------------|---------------|-----------------|
+| `hst`    | **55 of 116 (47.4%)**  | 297           | **52.5%**       |
+| Fisher   | 43 of 116 (37.1%)      | 316           | 49.1%           |
+| `evt`    | 29 of 116 (25.0%)      | 308           | 49.7%           |
+
+That is the number to quote: roughly **half the anomaly windows caught, and
+roughly every second alarm real**, at a threshold nothing tuned against the
+labels. Loosening `q` trades one for the other.
+
+Raw point-wise F1 at the same threshold is ~0.01 for every detector, and that
+figure is meaningless here: NAB marks ~33,500 individual points as anomalous
+because it labels whole windows, while a detector is supposed to fire once per
+event. The runner reports it (`fixed_raw_f1`) only so nobody has to re-derive
+why it looks catastrophic.
+
+Two negative results worth recording. Online reliability weighting
+(`fuse.WeightedCombine`) *loses* to unweighted Fisher over the same eight
+detectors on NAB (AUC-PR 0.1592 vs 0.1789) — it works when one detector is
+clearly broken, which is what its unit tests cover, but here all eight are
+mediocre and correlated, so down-weighting throws away signal. And widening the
+ensemble from three detectors to eight also hurts (0.2027 → 0.1789): the six
+weak members outvote the two strong ones.
+
+### New detectors
+- **Half-space trees** (`hst`): the streaming mass-based ensemble from Tan et
+  al., matching River's variant — random-midpoint trees over a randomized work
+  range, reference/latest mass windows swapped every `WindowSize` points, score
+  summed along the path until a node falls under the size limit. Scores are
+  causal (zero until the first window closes) and reproducible for a given seed.
+  Ships with an online min-max `Scaler` and a `Series` helper that lag-embeds a
+  univariate series.
+- **Extreme-value thresholding** (`evt`): POT with a Grimshaw profile-likelihood
+  GPD fit (grid + golden-section over θ, exponential limit included), plus
+  streaming `SPOT` and drift-aware `DSPOT`. `StreamProbabilities` returns a
+  calibrated tail p-value per point — the GPD survival function above the
+  initial threshold, the empirical right tail below it — so a detector's raw
+  score becomes something comparable across detectors. Peak storage is bounded
+  (`MaxPeaks`) while the exceedance rate stays unbiased.
+- **Fisher combination** (`fuse`): `Fisher`, a causal empirical-tail p-value
+  estimator, and `FisherStreams` for combining several detectors point by point.
+  Feeding EVT's *native* p-values into the combination beats converting them
+  empirically first (0.9662 vs 0.9570 macro PA-F1).
+
+### Matrix profile
+- `Scores` wraps the STOMP self-join with the settings that measured best:
+  per-subsequence output (spreading a discord over its whole window costs ~0.17
+  PA-F1 on NAB) and a small default window.
+- Fixed constant-window handling. `meanStd`'s rolling sums drift, so an
+  all-constant stretch produced σ = 0 at some offsets and σ ≈ 6e-8 at others —
+  the same flat data scored either a maximal discord or a perfect match
+  depending on position. Windows whose σ falls under a scale-relative epsilon
+  now match each other and only mismatch against non-flat windows. Worth
+  +0.03…+0.04 PA-F1 at every window size tested. `MatrixProfile` keeps the
+  textbook behaviour; the fix is on by default in `Scores`.
+
+### More detectors
+- **Subsequence detectors** (`sub`): a shared sliding-window embedding with
+  optional z-normalisation and trivial-match exclusion, feeding `KNN`, `LOF`,
+  `PCA` (reconstruction error over a Jacobi eigendecomposition, keeping enough
+  components for a target variance) and `IForest`. `Population` routes the same
+  embedding through the existing `outlier` package so the knn/kth-nn/lof/ldof
+  ensemble and its influence attribution work on subsequences too.
+- **DAMP** (`mp.DAMP`): causal discord discovery — backward doubling with early
+  abandoning over a pruning vector, on top of a new FFT-based `MASS` distance
+  profile. Scores each point against earlier subsequences only and is 5× faster
+  than `LeftMatrixProfile` at n=4000, m=16 (18ms vs 92ms), with the gap widening
+  as the window grows. `Lookahead` defaults to 0 to keep it strictly causal.
+
+### Ensembling
+- **Stouffer's method with weights** (`fuse.Stouffer`) on an Acklam inverse
+  normal, plus `Reliability` — online per-detector weights from a decayed
+  Youden's J against a **leave-one-out** consensus, scaled by how far each
+  detector's firing rate sits above its nominal level. The leave-one-out part
+  matters: judging a detector against a consensus it helped form lets one noisy
+  detector capture the vote and weight itself up.
+- **Per-series detector selection** (`selector`): nine shape features
+  (length, autocorrelation peak and its lag, trend, noise, skew, kurtosis,
+  spikiness, flatness) feeding a normalised k-NN vote over labelled examples,
+  with `Without` for leave-one-out evaluation and JSON round-tripping so a
+  model trained on your own corpus can be shipped. On NAB it picks `evt` for 28
+  series and `hst` for 21.
+
+### Benchmark
+- **Metrics** (`benchmark`): point-adjusted scoring (`Segments`, `PointAdjust`,
+  `PointAdjustedScore`, `BestPointAdjustedF1`, `BestF1`), `AUCPR` (tie-aware
+  average precision), `PointAdjustedAUCPR`, **PA%K** (`PointAdjustK`,
+  `BestPointAdjustedKF1`), **range-based precision/recall** with flat / front /
+  back / middle positional bias (`RangeRecall`, `RangePrecision`, `RangeF1`,
+  `BestRangeF1`), and **VUS-ROC / VUS-PR** (`RangeAUC`, `VUS`) over a
+  cosine-decayed label buffer with the existence reward.
+- **Corpus runners**: `LoadCorpusRoot` reads a NAB checkout from either layout
+  (`labels/combined_windows.json` or the root), and `LoadUCRCorpus` reads the
+  **UCR Anomaly Archive** — the benchmark NAB's critics recommend — parsing the
+  anomaly range straight out of each filename. `RunCorpusWith` adds every metric
+  above plus a **fixed-threshold protocol**: pass a `ThresholdFunc` (EVT-chosen,
+  or `QuantileThreshold`) and get F1 at a real operating point instead of an
+  oracle sweep. Unlabelled series are skipped explicitly, never counted as
+  perfect.
+- **Event-level scoring** (`Operating`, `EventScore`, `Curve`): anomaly windows
+  caught and alarm precision, which is what an operator actually asks for, plus
+  alarms per series so alarm volume is visible. `RunCorpusWith` also reports raw
+  point-wise F1 at the fixed threshold (`fixed_raw_f1`) — ~0.01 for everything,
+  and meaningless here, since NAB marks ~33,500 points anomalous by labelling
+  whole windows while a detector fires once per event. It is reported so nobody
+  has to re-derive why it looks catastrophic.
+- `semeion nab-corpus --dir D` (or `--ucr D`) runs any detector or ensemble from
+  the CLI, and `--policy precise --q 1e-3` adds the event-level report at a named
+  operating point. `make gate-nab` / `make gate-ucr` run `TestNABCorpusGate`;
+  `TestPrecisionStack` walks the whole stack and prints the Pareto frontier. All
+  skip unless `SEMEION_NAB_DIR` / `SEMEION_UCR_DIR` is set.
+
+### Turning scores into alarms
+- **`guard`**: the alarm policy layer, streaming and batch. K-of-N persistence
+  (fire only when K of the last N points clear the bar — the biggest single
+  false-alarm filter), a refractory period so one event is one alarm, warm-up
+  gating so nothing fires before the detector is calibrated, index-keyed
+  suppression windows for known change events, a cooldown that demands
+  escalation after firing, and a feedback penalty that raises the bar for a
+  series an operator marked as a false positive. Four presets — `Sensitive`,
+  `Balanced`, `Precise`, `Paranoid` — name the points on the frontier above.
+  Suppressed points still feed the persistence window, so a window boundary
+  cannot leak a stale hit into the first post-suppression point.
+- **`prep`**: autocorrelation period detection plus a causal, outlier-resistant
+  deseasonalizer — the residual against a rolling **median** of the last N
+  observations in the same seasonal slot. Median rather than mean, and causal
+  rather than STL, both deliberately: the existing `model.Decompose` absorbed an
+  injected +25 spike almost entirely into the seasonal component (assigning slot
+  20 a seasonal of +15.3 where the truth was −8.7), which is fine for
+  forecasting and useless for anomaly detection. `Options.STL` still routes
+  through it when you want the full decomposition.
+- **`fuse.Agree`**: calibrated k-of-m agreement. Instead of a hard AND, it takes
+  the k-th smallest p-value and maps it through its null distribution,
+  Beta(k, m−k+1), so "at least 2 of 3 detectors fired this hard" comes back as a
+  proper p-value. Verified uniform under the null at k=1,2,3,5. `MultiScale` and
+  `MultiScaleAgree` apply the same combiner across window sizes.
+- **`conformal`**: split (inductive) conformal with a distribution-free
+  guarantee — P(alarm | normal) ≤ α, verified empirically at α=0.1, 0.05, 0.01.
+  `MinCalibration` says how much calibration data an α needs to be attainable at
+  all, `Guarantee` reports the exact bound, and `Threshold` reproduces the alarm
+  rule as a scalar. `Mondrian` conditions calibration on the seasonal slot, so a
+  daily peak stops being an anomaly without losing a genuine spike on top of
+  that peak.
+
+### Production wiring
+- **EVT auto-threshold in the engine**, opt-in via `job.auto_threshold`. A SPOT
+  model calibrates on the raw per-bucket score distribution and then sets the
+  admission threshold from the data instead of the fixed `score >= 50`. Off by
+  default and byte-identical to the old behaviour when unset; bounded by
+  `min`/`max`; survives restart through the engine snapshot. The threshold only
+  changes at bucket boundaries, and each bucket is judged by the threshold
+  learned from the buckets before it. Every score-vs-threshold comparison in the
+  engine now routes through one `admits` helper, which is where the raw
+  distribution is observed.
+- **Feedback and calendars compose with the learned threshold.** No new
+  machinery was needed: `MarkFalsePositive` already gates emission per
+  (detector, series) and `Calendars` already silence a bucket, so with
+  `auto_threshold` on, the learned global threshold, the per-series
+  false-positive penalty and the suppression windows stack. Tests pin the
+  interaction — a report drops exactly the records between the learned threshold
+  and the penalised bar, and nothing else.
+- **Streaming state snapshots** for `hst.Forest`, `evt.SPOT` and `evt.DSPOT`
+  (`Snapshot` / `Restore*`), tested by splitting a stream in half and checking
+  the resumed half is identical to the unsplit run — without these the new
+  detectors could not survive a restart in a live job.
+- **Multivariate half-space trees** via `hst.SeriesMulti`, so the forest's
+  existing multi-dimensional support is reachable from a row feed.
+
+### Performance
+- **Parallel matrix profile** (`mp.Parallel`): a SCAMP-style diagonal
+  decomposition replaces the sequential STOMP row scan, giving each worker a
+  private profile that is merged at the end. Bit-comparable to `stomp` and **9×
+  faster** (111ms → 12ms at n=4000, m=8 on 16 threads). `Scores` uses it by
+  default; `Options.Serial` keeps the old path.
+- `evt.Options.RefitEvery` throttles GPD refits, and the Grimshaw candidate grid
+  shrank from ~580 evaluations to ~136 with no measurable loss of fit accuracy
+  (the parameter-recovery tests are unchanged).
+
+## [0.10.0]
+
+Closing the last capability gaps against Elastic ML that are addressable in
+code. Each feature is tested; all packages green, comment-free.
+
+### Seasonality/trend maturity — STL
+- **Real STL decomposition** (Seasonal-Trend decomposition using Loess): locally
+  weighted regression on the cycle-subseries and trend, a low-pass filter, and
+  bisquare robustness iterations, replacing the naive phase-average. `Decompose`
+  (and therefore the forecaster) now tracks trend through the series ends far
+  better and separates seasonality from a moving trend. Falls back to the
+  classical decomposition for series shorter than two periods.
+
+### Datafeed aggregation pushdown
+- **Elasticsearch composite aggregation** with `after_key` pagination for split
+  detectors, so a high-cardinality `by`/`partition` split yields *every* series
+  instead of being truncated at the `terms` size cap. Added a `Frequency` field
+  and confirmed cross-cluster (`cluster:index`) works through the same path.
+
+### Reusable filter lists
+- **Named, server-side filter lists** (`/v1/filters`, `GET`/`PUT`/`DELETE`),
+  referenced by many jobs. A rule gains a `scope` (`field` + `filter_id` +
+  `include`); the server resolves the referenced list and the engine applies the
+  rule only to in-scope records (Elastic filter-list + rule-scope parity). Lists
+  survive restart via the state snapshot.
+
+### Horizontal scale
+- **Cluster mode**: live jobs are sharded across nodes by a consistent-hash ring
+  (`--self`, `--peers`), and a node transparently forwards a job-scoped request
+  (create / points / status / results / history / influencers) to the node that
+  owns the job, so replicas share load and memory and any node can receive any
+  request. New `/v1/cluster` endpoint; a Helm `HorizontalPodAutoscaler` (CPU) and
+  autoscaling values. Stateless endpoints are served wherever they land. The
+  forwarding client has a 30s timeout so a hung peer can't pile up goroutines,
+  and restored filter lists are re-normalized under the same size caps.
+
 ## [0.9.0]
 
 Production-readiness hardening. A four-agent audit (quality gate, server

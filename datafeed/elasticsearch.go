@@ -20,15 +20,17 @@ type ESMetric struct {
 }
 
 type ESSource struct {
-	BaseURL    string
-	Index      string
-	TimeField  string
-	Metric     ESMetric
-	SplitField string
-	TermsSize  int
-	HTTP       *http.Client
-	Username   string
-	Password   string
+	BaseURL           string
+	Index             string
+	TimeField         string
+	Metric            ESMetric
+	SplitField        string
+	TermsSize         int
+	CompositePageSize int
+	Frequency         time.Duration
+	HTTP              *http.Client
+	Username          string
+	Password          string
 }
 
 func NewESSource(baseURL, index, timeField string, m ESMetric) *ESSource {
@@ -93,6 +95,9 @@ func (s *ESSource) buildBody(start, end time.Time, step time.Duration) ([]byte, 
 }
 
 func (s *ESSource) Fetch(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
+	if s.SplitField != "" {
+		return s.fetchComposite(ctx, start, end, step)
+	}
 	if step <= 0 || !end.After(start) {
 		return s.fetchWindow(ctx, start, end, step)
 	}
@@ -112,11 +117,7 @@ func (s *ESSource) Fetch(ctx context.Context, start, end time.Time, step time.Du
 	return out, nil
 }
 
-func (s *ESSource) fetchWindow(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
-	body, err := s.buildBody(start, end, step)
-	if err != nil {
-		return nil, err
-	}
+func (s *ESSource) doSearch(ctx context.Context, body []byte) ([]byte, error) {
 	endpoint := s.BaseURL + "/" + s.Index + "/_search"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -138,7 +139,132 @@ func (s *ESSource) fetchWindow(ctx context.Context, start, end time.Time, step t
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("elasticsearch HTTP %d: %s", resp.StatusCode, string(raw))
 	}
+	return raw, nil
+}
+
+func (s *ESSource) fetchWindow(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
+	body, err := s.buildBody(start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.doSearch(ctx, body)
+	if err != nil {
+		return nil, err
+	}
 	return parseESAgg(raw, esAgg(s.Metric.Func) == "count", s.SplitField)
+}
+
+const maxCompositePages = 100000
+
+func (s *ESSource) compositePageSize() int {
+	if s.CompositePageSize > 0 {
+		return s.CompositePageSize
+	}
+	return 10000
+}
+
+func (s *ESSource) fetchComposite(ctx context.Context, start, end time.Time, step time.Duration) ([]core.DataPoint, error) {
+	isCount := esAgg(s.Metric.Func) == "count"
+	var out []core.DataPoint
+	var after map[string]any
+	for page := 0; page < maxCompositePages; page++ {
+		body, err := s.buildCompositeBody(start, end, step, after)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := s.doSearch(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		pts, next, err := parseESComposite(raw, isCount, s.SplitField)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pts...)
+		if next == nil || len(pts) == 0 {
+			break
+		}
+		after = next
+	}
+	return out, nil
+}
+
+func (s *ESSource) buildCompositeBody(start, end time.Time, step time.Duration, after map[string]any) ([]byte, error) {
+	agg := esAgg(s.Metric.Func)
+	if agg != "count" && s.Metric.Field == "" {
+		return nil, fmt.Errorf("elasticsearch: metric %q needs a field", s.Metric.Func)
+	}
+	sources := []any{
+		map[string]any{"time": map[string]any{"date_histogram": map[string]any{
+			"field":          s.TimeField,
+			"fixed_interval": strconv.FormatInt(step.Milliseconds(), 10) + "ms",
+		}}},
+		map[string]any{"term": map[string]any{"terms": map[string]any{"field": s.SplitField}}},
+	}
+	composite := map[string]any{"size": s.compositePageSize(), "sources": sources}
+	if after != nil {
+		composite["after"] = after
+	}
+	series := map[string]any{"composite": composite}
+	if agg != "count" {
+		series["aggs"] = map[string]any{"metric": map[string]any{agg: map[string]any{"field": s.Metric.Field}}}
+	}
+	body := map[string]any{
+		"size": 0,
+		"query": map[string]any{
+			"range": map[string]any{
+				s.TimeField: map[string]any{
+					"gte":    start.UnixMilli(),
+					"lte":    end.UnixMilli(),
+					"format": "epoch_millis",
+				},
+			},
+		},
+		"aggs": map[string]any{"series": series},
+	}
+	return json.Marshal(body)
+}
+
+func parseESComposite(body []byte, isCount bool, splitField string) ([]core.DataPoint, map[string]any, error) {
+	var r struct {
+		Error        json.RawMessage `json:"error"`
+		Aggregations struct {
+			Series struct {
+				AfterKey map[string]any `json:"after_key"`
+				Buckets  []struct {
+					Key      map[string]json.RawMessage `json:"key"`
+					DocCount int64                      `json:"doc_count"`
+					Metric   *esMetricVal               `json:"metric"`
+				} `json:"buckets"`
+			} `json:"series"`
+		} `json:"aggregations"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, nil, fmt.Errorf("elasticsearch: decode: %w", err)
+	}
+	if len(r.Error) > 0 && string(r.Error) != "null" {
+		return nil, nil, fmt.Errorf("elasticsearch: %s", string(r.Error))
+	}
+	var out []core.DataPoint
+	for _, b := range r.Aggregations.Series.Buckets {
+		tsRaw, ok := b.Key["time"]
+		if !ok {
+			continue
+		}
+		var ms int64
+		if json.Unmarshal(tsRaw, &ms) != nil {
+			continue
+		}
+		v, ok := valueOfBucket(isCount, b.DocCount, b.Metric)
+		if !ok {
+			continue
+		}
+		out = append(out, core.DataPoint{
+			Time: time.UnixMilli(ms).UTC(), Value: v,
+			Fields: map[string]string{splitField: termKey(b.Key["term"])},
+		})
+	}
+	return out, r.Aggregations.Series.AfterKey, nil
 }
 
 type esMetricVal struct {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,6 +56,8 @@ func main() {
 		err = runCloudflare(os.Args[2:])
 	case "nab":
 		err = runNAB(os.Args[2:])
+	case "nab-corpus":
+		err = runNABCorpus(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "-h", "--help", "help":
@@ -83,6 +86,7 @@ usage:
   semeion outliers --csv F           find the rows that don't belong (population)
   semeion cloudflare --file F        detect anomalies in a Cloudflare Logpush NDJSON export
   semeion nab --csv F --windows W    score detection quality on a NAB corpus (Numenta benchmark)
+  semeion nab-corpus --dir D         score a whole NAB (or --ucr) corpus; --policy for event-level
   semeion serve [--addr :8080]       REST API + Anomaly Explorer UI
   semeion bench                      run the quality benchmark
 
@@ -440,10 +444,22 @@ func runServe(args []string) error {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (serves HTTPS when set with --tls-key)")
 	tlsKey := fs.String("tls-key", "", "TLS key file")
 	historyDir := fs.String("history", "", "durable anomaly history directory (enables /v1/history)")
+	self := fs.String("self", "", "this node's address for cluster mode (e.g. host:8080)")
+	peers := fs.String("peers", "", "comma-separated peer addresses for horizontal sharding")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	srv := api.NewServer()
+	if *self != "" {
+		var ps []string
+		for _, p := range strings.Split(*peers, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				ps = append(ps, p)
+			}
+		}
+		srv.WithCluster(*self, ps)
+		fmt.Printf("cluster mode: self=%s peers=%v\n", *self, ps)
+	}
 	if *historyDir != "" {
 		srv.WithHistory(*historyDir)
 		fmt.Printf("durable history → %s\n", *historyDir)

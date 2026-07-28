@@ -58,11 +58,13 @@ type Engine struct {
 	rare       map[string]*rareTracker
 	provider   model.Provider
 	threshold  float64
+	autoThresh *autoThreshold
 
 	pending   map[time.Time][]core.DataPoint
 	watermark time.Time
 	hasMark   bool
 
+	rawMax           float64
 	seriesLRU        map[string]int64
 	seriesScores     map[string][]float64
 	lastSeen         map[string]time.Time
@@ -111,6 +113,7 @@ func NewWithProvider(job jobspec.Job, prov model.Provider) (*Engine, error) {
 		rare:       make(map[string]*rareTracker),
 		provider:   prov,
 		threshold:  defaultThreshold,
+		autoThresh: newAutoThreshold(job.AutoThreshold),
 		pending:    make(map[time.Time][]core.DataPoint),
 	}, nil
 }
@@ -131,6 +134,7 @@ func seriesKey(d jobspec.Detector, fields map[string]string) string {
 func (e *Engine) scoreBucket(bt time.Time, pts []core.DataPoint) core.BucketResult {
 	br := core.BucketResult{Time: bt}
 	e.curBucket = bt
+	e.rawMax = 0
 
 	if e.inCalendar(bt) {
 		return br
@@ -233,7 +237,7 @@ func (e *Engine) scoreTemporalPeek(br *core.BucketResult, d jobspec.Detector, bt
 			continue
 		}
 		prob, score, typical, dir := mdl.Score(val)
-		if score < e.threshold {
+		if !e.admits(score) {
 			continue
 		}
 		lower, upper := mdl.Bounds(boundsZ)
@@ -269,7 +273,7 @@ func (e *Engine) scoreRatio(br *core.BucketResult, d jobspec.Detector, bt time.T
 		mdl := e.model(mk, d.EffectiveSide())
 		prob, score, typical, dir := mdl.Observe(val)
 		lower, upper := mdl.Bounds(boundsZ)
-		admit := score >= e.threshold
+		admit := e.admits(score)
 		if admit && e.job.Sensitivity > 0 {
 			admit = e.adaptiveAdmit(mk, score)
 		}
@@ -346,7 +350,7 @@ func (e *Engine) scoreTemporal(br *core.BucketResult, d jobspec.Detector, bt tim
 			}
 			lower, upper = mdl.Bounds(boundsZ)
 		}
-		admit := score >= e.threshold
+		admit := e.admits(score)
 		if admit && e.job.Sensitivity > 0 {
 			admit = e.adaptiveAdmit(mk, score)
 		}
@@ -473,7 +477,7 @@ func (e *Engine) scorePopulationSplit(br *core.BucketResult, d jobspec.Detector,
 		m.Learn(x.val)
 	}
 	for _, x := range evs {
-		if x.score >= e.threshold {
+		if e.admits(x.score) {
 			infl := []core.Influencer{{Field: d.OverField, Value: x.entity}}
 			if p0 := byEntity[x.entity]; len(p0) > 0 {
 				if d.PartitionField != "" {
@@ -524,7 +528,7 @@ func (e *Engine) scoreMultivariate(br *core.BucketResult, d jobspec.Detector, bt
 			e.multivar[mk] = mm
 		}
 		prob, score, dist, contrib := mm.Observe(vec)
-		if score >= e.threshold {
+		if e.admits(score) {
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
 				Actual: dist, Typical: math.Sqrt(float64(len(d.Fields))),
@@ -618,7 +622,7 @@ func (e *Engine) scoreGeo(br *core.BucketResult, d jobspec.Detector, bt time.Tim
 		}
 		actualKm, _ := gm.DistanceKm(lat, lon)
 		prob, score, typicalKm, dir := gm.Observe(lat, lon)
-		if score >= e.threshold {
+		if e.admits(score) {
 			lower, upper := gm.Bounds(boundsZ)
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk,
@@ -665,7 +669,7 @@ func (e *Engine) scoreInfoContent(br *core.BucketResult, d jobspec.Detector, bt 
 		val := shannonEntropy(pp, d.ByField)
 		m := e.model(d.ID()+"|"+part, jobspec.SideBoth)
 		prob, score, typical, dir := m.Observe(val)
-		if score >= e.threshold {
+		if e.admits(score) {
 			bv, bscore := dominant(pp, d.ByField)
 			infl := []core.Influencer{{Field: d.ByField, Value: bv, Score: bscore}}
 			if d.PartitionField != "" {
@@ -699,7 +703,7 @@ func (e *Engine) scoreTimeOf(br *core.BucketResult, d jobspec.Detector, bt time.
 			e.slotModels[key] = m
 		}
 		prob, score, typical, dir := m.Observe(val)
-		if score >= e.threshold {
+		if e.admits(score) {
 			e.emit(br, d, core.Record{
 				Time: bt, Detector: d.ID(), Series: sk, Actual: val, Typical: typical,
 				Probability: prob, Score: score, Direction: dir, Kind: string(d.Function),
@@ -774,7 +778,7 @@ func (e *Engine) scoreRare(br *core.BucketResult, d jobspec.Detector, bt time.Ti
 			if score > 100 {
 				score = 100
 			}
-			if score < e.threshold {
+			if !e.admits(score) {
 				continue
 			}
 			e.emit(br, d, core.Record{
@@ -1144,9 +1148,21 @@ func (e *Engine) suppressed(d jobspec.Detector, r core.Record) bool {
 			return true
 		}
 	}
+	var fields map[string]string
 	for _, rule := range d.Rules {
 		if rule.SkipModelUpdate {
 			continue
+		}
+		if len(rule.Scope) > 0 {
+			if fields == nil {
+				fields = make(map[string]string, len(r.Influencers))
+				for _, infl := range r.Influencers {
+					fields[infl.Field] = infl.Value
+				}
+			}
+			if !rule.InScope(fields) {
+				continue
+			}
 		}
 		if rule.SkipActualBelow != nil && r.Actual < *rule.SkipActualBelow {
 			return true
@@ -1210,7 +1226,9 @@ func (e *Engine) Run(points []core.DataPoint, threshold float64) []core.BucketRe
 
 	out := make([]core.BucketResult, 0, len(times))
 	for _, bt := range times {
-		out = append(out, e.scoreBucket(bt, buckets[bt]))
+		br := e.scoreBucket(bt, buckets[bt])
+		e.observeThreshold()
+		out = append(out, br)
 	}
 	return out
 }
@@ -1263,7 +1281,9 @@ func (e *Engine) closeBefore(limit time.Time) []core.BucketResult {
 	}
 	out := make([]core.BucketResult, 0, len(times))
 	for _, t := range times {
-		out = append(out, e.scoreBucket(t, e.pending[t]))
+		br := e.scoreBucket(t, e.pending[t])
+		e.observeThreshold()
+		out = append(out, br)
 		delete(e.pending, t)
 	}
 	return out
@@ -1291,6 +1311,8 @@ type Snapshot struct {
 	Multivar map[string]detect.MultivariateState `json:"multivar,omitempty"`
 	Slots    map[string]detect.ModelState        `json:"slots,omitempty"`
 	Geo      map[string]detect.GeoState          `json:"geo,omitempty"`
+
+	AutoThreshold []byte `json:"auto_threshold,omitempty"`
 }
 
 type RareState struct {
@@ -1332,17 +1354,18 @@ func (e *Engine) Snapshot() Snapshot {
 		geo[k] = m.State()
 	}
 	return Snapshot{
-		JobName:   e.job.Name,
-		Threshold: e.threshold,
-		Watermark: e.watermark,
-		HasMark:   e.hasMark,
-		Models:    ms,
-		Rare:      rs,
-		Seasonal:  seas,
-		Distrib:   dist,
-		Multivar:  mv,
-		Slots:     slots,
-		Geo:       geo,
+		JobName:       e.job.Name,
+		Threshold:     e.threshold,
+		Watermark:     e.watermark,
+		HasMark:       e.hasMark,
+		Models:        ms,
+		Rare:          rs,
+		Seasonal:      seas,
+		Distrib:       dist,
+		Multivar:      mv,
+		Slots:         slots,
+		Geo:           geo,
+		AutoThreshold: e.autoThresh.snapshot(),
 	}
 }
 
@@ -1350,6 +1373,7 @@ func (e *Engine) Restore(s Snapshot) {
 	if s.Threshold > 0 {
 		e.threshold = s.Threshold
 	}
+	e.autoThresh.restore(s.AutoThreshold)
 	e.watermark = s.Watermark
 	e.hasMark = s.HasMark
 	e.models = make(map[string]*detect.Model, len(s.Models))

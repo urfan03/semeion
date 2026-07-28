@@ -70,6 +70,7 @@ func (s *Server) RegisterJob(req liveJobRequest) (*liveJob, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.resolveFilters(&job)
 		eng, err := engine.NewWithProvider(job, s.provider)
 		if err != nil {
 			return nil, err

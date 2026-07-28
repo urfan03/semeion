@@ -1,5 +1,17 @@
 replicaCount: 1
 
+# Horizontal autoscaling. semeion shards live jobs across replicas by a
+# consistent-hash ring and transparently forwards a request to the node that
+# owns the job, so replicas scale out load and memory. For sharding across
+# replicas, give each node its address and its peers via extraArgs, e.g.
+#   extraArgs: ["--self=$(POD_IP):8080", "--peers=semeion-0.semeion:8080,..."]
+# (a headless Service + stable addresses are the simplest way to supply peers).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
 image:
   repository: ghcr.io/urfan03/semeion
   # Defaults to .Chart.AppVersion when empty.

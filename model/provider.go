@@ -92,6 +92,13 @@ func detectSeasonality(raw []float64) []int {
 }
 
 func decompose(x []float64, period int) Decomposition {
+	if period >= 2 && len(x) >= 2*period {
+		return stl(x, period, 2, 2)
+	}
+	return classicalDecompose(x, period)
+}
+
+func classicalDecompose(x []float64, period int) Decomposition {
 	n := len(x)
 	d := Decomposition{Trend: make([]float64, n), Seasonal: make([]float64, n), Resid: make([]float64, n)}
 	if period < 2 || n == 0 {

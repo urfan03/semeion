@@ -17,6 +17,7 @@ import (
 	"github.com/urfan03/semeion/alert"
 	"github.com/urfan03/semeion/autopilot"
 	"github.com/urfan03/semeion/catalog"
+	"github.com/urfan03/semeion/cluster"
 	"github.com/urfan03/semeion/core"
 	"github.com/urfan03/semeion/correlate"
 	"github.com/urfan03/semeion/engine"
@@ -57,6 +58,11 @@ type Server struct {
 
 	history   *store.ResultLog
 	forecasts forecastStore
+	filters   filterStore
+
+	self          string
+	ring          *cluster.Ring
+	clusterClient *http.Client
 }
 
 func (s *Server) WithHistory(dir string) *Server {
@@ -143,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/history/", s.handleHistory)
 	mux.HandleFunc("/v1/catalog", s.handleCatalog)
 	mux.HandleFunc("/v1/catalog/", s.handleCatalog)
+	mux.HandleFunc("/v1/filters", s.handleFilters)
+	mux.HandleFunc("/v1/filters/", s.handleFilters)
 	mux.HandleFunc("/v1/grafana/", s.handleGrafana)
 
 	mux.HandleFunc("/grafana/search", s.handleGrafanaSearch)
@@ -156,14 +164,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/cloudflare/logs", s.handleCloudflareLogs)
 	mux.HandleFunc("/v1/prometheus/write", s.handlePromRemoteWrite)
 	mux.HandleFunc("/v1/topology", s.handleTopology)
+	mux.HandleFunc("/v1/cluster", s.handleCluster)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", s.handleUI)
 
 	var h http.Handler = mux
-	h = s.withAuth(h)
+	h = s.withCluster(h)
 	h = s.withRateLimit(h)
+	h = s.withAuth(h)
 	h = withBodyLimit(h)
 	h = withRecover(h)
 	return h
@@ -249,6 +259,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.resolveFilters(&job)
 	if req.Threshold <= 0 {
 		req.Threshold = 50
 	}

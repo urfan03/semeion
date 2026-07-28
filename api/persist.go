@@ -25,6 +25,7 @@ type ServerState struct {
 	Tracker  correlate.TrackerSnapshot `json:"tracker"`
 	SLOs     map[string]sloSnapshot    `json:"slos,omitempty"`
 	LiveJobs []liveJobSnapshot         `json:"live_jobs,omitempty"`
+	Filters  map[string][]string       `json:"filters,omitempty"`
 }
 
 type sloSnapshot struct {
@@ -54,6 +55,7 @@ func (s *Server) Snapshot() ServerState {
 		Tracker: s.tracker.Snapshot(),
 		SLOs:    map[string]sloSnapshot{},
 	}
+	st.Filters = s.filters.snapshot()
 	s.mu.RLock()
 	st.Changes = append([]correlate.Change(nil), s.changes...)
 	for name, series := range s.slos {
@@ -94,6 +96,9 @@ func (s *Server) Restore(st ServerState) error {
 	}
 	s.graph.Restore(st.Graph)
 	s.tracker.Restore(st.Tracker)
+	if st.Filters != nil {
+		s.filters.load(st.Filters)
+	}
 
 	s.mu.Lock()
 	s.changes = append([]correlate.Change(nil), st.Changes...)
