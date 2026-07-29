@@ -100,14 +100,15 @@ type Alarm struct {
 }
 
 type Detector struct {
-	opt      Options
-	policy   guard.Options
-	hist     []float64
-	base     int
-	seen     int
-	sinceRun int
-	emitted  int
-	period   int
+	opt        Options
+	policy     guard.Options
+	hist       []float64
+	base       int
+	seen       int
+	sinceRun   int
+	emitted    int
+	period     int
+	calibrated bool
 }
 
 func New(opt Options) (*Detector, error) {
@@ -133,6 +134,11 @@ func (d *Detector) Seen() int { return d.seen }
 func (d *Detector) Ready() bool { return len(d.hist) > d.opt.Calibration }
 
 func (d *Detector) Period() int { return d.period }
+
+// Calibrated reports whether the last evaluation managed to establish a
+// threshold. False means the series was too short or too flat to fit one, so an
+// empty alarm list says nothing about whether the metric is healthy.
+func (d *Detector) Calibrated() bool { return d.calibrated }
 
 func (d *Detector) push(v float64) {
 	if len(d.hist) == d.opt.History {
@@ -250,12 +256,17 @@ func (d *Detector) evaluate() []Alarm {
 	if d.opt.Budget.Alarms > 0 && d.opt.Budget.Per > 0 {
 		policy.Threshold = guard.SolveThreshold(scores, d.opt.Budget, policy)
 	} else {
-		z, _, ok := evt.POT(scores, evt.Options{Q: d.opt.Q, Level: 0.98})
+		z, ok := potThreshold(scores, d.opt.Q)
 		if !ok {
+			// No threshold could be established, which is NOT the same as "all
+			// quiet" — reporting it as no alarms would be indistinguishable from
+			// a healthy series and hide the fact that nothing was ever checked.
+			d.calibrated = false
 			return nil
 		}
 		policy.Threshold = z
 	}
+	d.calibrated = true
 
 	fired := guard.Apply(scores, policy)
 	base, scaleOf := guard.RollingBaseline(d.hist, d.opt.Calibration/2)
@@ -350,6 +361,33 @@ func locate(dev []float64, start, end, search int) (int, int) {
 		b = end
 	}
 	return a, b
+}
+
+// potThreshold fits the extreme-value threshold, falling back to a lower
+// peak-selection level on series too short to yield peaks at the preferred one.
+//
+// POT needs a minimum number of peaks to fit a distribution at all. At the 98th
+// percentile a 500-point series yields only ~10 peaks — exactly the floor — so
+// anything shorter never calibrates and silently reports no alarms. Lowering the
+// level is not free: on NAB, lowering it for series where 0.98 would have fitted
+// cost recall (0.207 -> 0.198 at the precise setting), because a level that
+// reaches into the body of the distribution flattens the tail estimate. So 0.98
+// stays first and the length-aware level is only a fallback.
+func potThreshold(scores []float64, q float64) (float64, bool) {
+	const wantPeaks = 30
+	level := 1 - float64(wantPeaks)/float64(len(scores))
+	if level < 0.90 {
+		level = 0.90
+	}
+	if level > 0.98 {
+		level = 0.98
+	}
+	for _, l := range []float64{0.98, level, 0.90, 0.80} {
+		if z, _, ok := evt.POT(scores, evt.Options{Q: q, Level: l}); ok {
+			return z, true
+		}
+	}
+	return 0, false
 }
 
 func reason(k shape.Kind, duration int, effect float64) string {

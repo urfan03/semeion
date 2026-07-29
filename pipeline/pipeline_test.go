@@ -250,3 +250,46 @@ func TestScanRejectsUnusableInput(t *testing.T) {
 		t.Fatal("and the detector must not claim to be ready")
 	}
 }
+
+// A fixed high POT level needs a minimum number of peaks to fit, so a short
+// series could never establish a threshold and evaluate() returned no alarms —
+// indistinguishable from a healthy metric. These pin both halves of the fix:
+// the level adapts to the series length, and failure is reported as failure.
+func TestPotThresholdFitsShortSeries(t *testing.T) {
+	for _, n := range []int{336, 400, 504, 1000} {
+		scores := make([]float64, n)
+		rng := rand.New(rand.NewPCG(uint64(n), 3))
+		for i := range scores {
+			scores[i] = math.Abs(rng.NormFloat64())
+		}
+		if _, ok := potThreshold(scores, 1e-3); !ok {
+			t.Fatalf("a %d-point series must be able to establish a threshold", n)
+		}
+	}
+}
+
+func TestScanReportsWhetherItCalibrated(t *testing.T) {
+	// 336 and 504 are two and three weeks of hourly points — the windows a
+	// caller scanning hourly metrics actually has, and the sizes at which a
+	// fixed 98th-percentile threshold could not be fitted at all.
+	for _, n := range []int{336, 504, 1000} {
+		d, _ := New(Options{History: 600, Calibration: 200, Sensitivity: Sensitive})
+		values := series(n, uint64(n), false)
+		for i := n - 30; i < n; i++ {
+			values[i] += 40
+		}
+		if d.Scan(values); !d.Calibrated() {
+			t.Fatalf("a %d-point series with real variation must calibrate", n)
+		}
+	}
+
+	// A perfectly flat series has no tail to fit, and must say so rather than
+	// quietly report a clean bill of health.
+	flat, _ := New(Options{History: 600, Calibration: 200, Sensitivity: Sensitive})
+	if got := flat.Scan(make([]float64, 500)); len(got) != 0 {
+		t.Fatalf("a flat series has no alarms, got %d", len(got))
+	}
+	if flat.Calibrated() {
+		t.Fatal("a flat series cannot establish a threshold and must not claim it did")
+	}
+}

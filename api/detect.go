@@ -123,6 +123,13 @@ func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 				v.Skipped = "not enough history to calibrate"
 				break
 			}
+			if !d.Calibrated() {
+				// Distinct from "quiet": no threshold could be fitted, so this
+				// series was never actually checked. Reporting zero alarms here
+				// would read as a clean bill of health.
+				v.Skipped = "could not fit an alarm threshold — series too short or too flat"
+				break
+			}
 			v.Alarms = alarms
 			last := len(sr.Values) - 1
 			for _, a := range alarms {

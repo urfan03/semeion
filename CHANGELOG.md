@@ -311,6 +311,16 @@ detector on a live stream.
   is the elevated stretch and the effect size means something.
 - **Four named sensitivities** plus optional duration, effect-size, budget and
   deseasonalizing gates.
+- **Says when it never checked.** Fitting the extreme-value threshold needs a
+  minimum number of peaks, and at the 98th percentile a series under ~500 points
+  does not have them — so a short window silently produced *no alarms*, which is
+  indistinguishable from a healthy metric. `Calibrated()` now separates the two,
+  `/v1/detect` reports it as a distinct skip reason instead of a clean bill of
+  health, and the threshold falls back to a length-aware level so short windows
+  can calibrate at all. The fallback is deliberately *second*: lowering the level
+  on series where 0.98 fits costs recall on NAB (0.2069 → 0.1983 at `Precise`,
+  measured), because a level that reaches into the body of the distribution
+  flattens the tail estimate. Every number in the table below is unchanged.
 
 Measured end to end on NAB, counting **pages** — one contiguous alarm region is
 one page, which is what an operator actually receives:
